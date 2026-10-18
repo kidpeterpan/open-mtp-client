@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch or PR makes an older run pointless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: make lint
+
+  test:
+    name: Test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: make test
+
+  coverage:
+    name: Coverage (at least 75% of lines)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: make coverage
+
+  vendor:
+    name: Vendored mtp-rs tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            vendor/mtp-rs
+      - run: make test-vendor
+
+  # Builds the same app a user would: Apple Silicon and Intel halves joined, signed ad hoc,
+  # and the bundled command-line tool run once. Fails if either architecture is missing.
+  app:
+    name: Build the universal app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: make app
+      - name: Zip the app (ditto keeps the bundle intact)
+        run: ditto -c -k --keepParent dist/open-mtp-client.app dist/open-mtp-client.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-mtp-client-macos
+          path: dist/open-mtp-client.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # One required check for branch protection: it passes only when every job above did.
+  ci-ok:
+    name: CI passed
+    if: always()
+    needs: [lint, test, coverage, vendor, app]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the results of the jobs
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for r in $RESULTS; do
+            if [ "$r" != "success" ]; then
+              echo "a required job did not succeed" >&2
+              exit 1
+            fi
+          done

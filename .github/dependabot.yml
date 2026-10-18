@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # iced and its crates move together; one PR is easier to review than six.
+      iced:
+        patterns: ["iced*"]
+      objc2:
+        patterns: ["objc2*", "block2"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

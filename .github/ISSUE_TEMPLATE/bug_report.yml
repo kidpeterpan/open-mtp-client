@@ -1,0 +1,50 @@
+name: Bug report
+description: Something went wrong, or a phone won't connect
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The quickest fix starts with the diagnostics report: open **Help › About**,
+        read it (it holds no file names, no photos and no account details) and paste it below.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: Phone
+      description: Make, model and Android version.
+      placeholder: Pixel 8, Android 15
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac
+      description: macOS version and chip.
+      placeholder: macOS 15.1, Apple M2
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: open-mtp-client version
+      description: Shown in Help › About.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Diagnostics report
+      description: Paste it from Help › About › Copy report.
+      render: text
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Cable, USB hub, other apps that were open (Photos, Android File Transfer, Dropbox…).

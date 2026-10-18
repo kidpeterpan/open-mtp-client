@@ -1,0 +1,6 @@
+/target
+/.virtual-phone
+.DS_Store
+/.claude/scheduled_tasks.lock
+/dist
+/vendor/mtp-rs/Cargo.lock

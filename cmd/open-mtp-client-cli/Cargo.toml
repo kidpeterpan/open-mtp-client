@@ -1,0 +1,18 @@
+[package]
+name = "open-mtp-client-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "open-mtp-client-cli"
+path = "main.rs"
+
+[dependencies]
+internal.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

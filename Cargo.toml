@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["cmd/open-mtp-client", "cmd/open-mtp-client-cli", "internal"]
+# A copy of mtp-rs with a small patch (see vendor/README.md); not ours to lint.
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/kidpeterpan/open-mtp-client"
+
+[workspace.dependencies]
+internal = { path = "internal", package = "open-mtp-client-internal" }
+mtp-rs = { version = "0.33", features = ["virtual-device"] }
+nusb = "0.2"
+libc = "0.2"
+iced = { version = "0.14", features = ["tokio", "image-without-codecs", "advanced"] }
+iced_test = "0.14"
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time", "fs", "io-util", "process"] }
+async-trait = "0.1"
+thiserror = "2"
+tempfile = "3"
+trash = "5"
+bytes = "1"
+futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio-util = { version = "0.7", features = ["io"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Telling duplicate files apart by their whole contents (Free Up Space).
+sha2 = "0.10"
+# The Dock icon's progress bar and notifications (local/dock.rs): the same
+# versions winit already builds the window with.
+objc2 = "0.5"
+block2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSBundle", "NSData", "NSDate", "NSDictionary", "NSError", "NSGeometry", "NSObjCRuntime", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSArray", "NSURL"] }
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSBitmapImageRep", "NSBox", "NSCell", "NSColor", "NSControl", "NSDockTile", "NSImage", "NSImageRep", "NSEvent", "NSGraphicsContext", "NSImageView", "NSMenu", "NSMenuItem", "NSProgressIndicator", "NSResponder", "NSRunningApplication", "NSSharingService", "NSView", "NSWindow"] }
+objc2-user-notifications = { version = "0.2", features = ["block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+
+# mtp-rs 0.33 has no way to read a device property (battery level) from an
+# open device; vendor/mtp-rs is 0.33.0 with that added (vendor/README.md).
+[patch.crates-io]
+mtp-rs = { path = "vendor/mtp-rs" }

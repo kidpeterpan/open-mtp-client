@@ -1,0 +1,768 @@
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2026-10-18 10:26:17
++++ b/src/lib.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
+ //! # mtp-rs
+ //!
+ //! A pure-Rust MTP (Media Transfer Protocol) library targeting modern Android devices.
+@@ -77,7 +78,7 @@
+     clear_dropped_paths, clear_object_info_errors, dropped_paths_since_pause, force_cancel_wedge,
+     force_object_info_error, force_operation_wedge, force_partial_read_caps, pause_watcher,
+     register_virtual_device, rekey_virtual_object, rescan_virtual_device,
+-    unregister_virtual_device, was_path_dropped, WatcherGuard,
++    set_virtual_battery_level, unregister_virtual_device, was_path_dropped, WatcherGuard,
+ };
+ #[cfg(feature = "virtual-device")]
+ pub use transport::virtual_device::RescanSummary;
+diff -ruN a/src/mtp/backend/mod.rs b/src/mtp/backend/mod.rs
+--- a/src/mtp/backend/mod.rs	2026-10-18 10:26:17
++++ b/src/mtp/backend/mod.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-17): battery level, supported operations (see vendor/README.md).
+ //! The backend seam for the high-level [`crate::mtp`] API.
+ //!
+ //! [`MtpBackend`] is the one abstraction every concrete portable-device backend implements in
+@@ -198,6 +199,23 @@
+ 
+     /// Fetch the thumbnail bytes for `obj`.
+     async fn thumbnail(&self, obj: ObjectHandle) -> Result<Vec<u8>, Error>;
++
++    /// The battery level in percent, or `None` when the device does not report one.
++    async fn battery_level(&self) -> Result<Option<u8>, Error> {
++        Ok(None)
++    }
++
++    /// The device is an Android phone or tablet: its MTP server names the
++    /// "android.com" vendor extension.
++    fn is_android(&self) -> bool {
++        false
++    }
++
++    /// Whether the device lists the PTP/MTP operation `code` among those it
++    /// supports.
++    fn supports_operation(&self, _code: u16) -> bool {
++        false
++    }
+ 
+     /// Create a new object under `parent` on `storage` and stream its data.
+     async fn upload(
+diff -ruN a/src/mtp/backend/usb.rs b/src/mtp/backend/usb.rs
+--- a/src/mtp/backend/usb.rs	2026-10-18 10:26:17
++++ b/src/mtp/backend/usb.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-17): battery level, supported operations (see vendor/README.md).
+ //! The PTP-over-USB backend: today's [`PtpSession`] logic behind the neutral [`MtpBackend`] trait.
+ //!
+ //! All device-quirk handling lives here (the root-listing fast path and Android/Samsung/Fuji
+@@ -81,6 +82,12 @@
+     /// ranged/windowed read path (see [`plan_partial_read`]).
+     has_partial_object_64: bool,
+     has_partial_object: bool,
++    /// The device lists BatteryLevel among its properties and can be asked for one.
++    has_battery_level: bool,
++    /// The vendor extension description names "android.com".
++    is_android: bool,
++    /// The operation codes the device lists as supported.
++    operations: Vec<u16>,
+ }
+ 
+ impl UsbBackend {
+@@ -90,12 +97,25 @@
+         let capabilities = Capabilities::from_ptp_device_info(&ptp_info);
+         let has_partial_object_64 = ptp_info.supports_operation(OperationCode::GetPartialObject64);
+         let has_partial_object = ptp_info.supports_operation(OperationCode::GetPartialObject);
++        let has_battery_level = ptp_info.supports_operation(OperationCode::GetDevicePropValue)
++            && ptp_info
++                .device_properties_supported
++                .contains(&u16::from(crate::ptp::DevicePropertyCode::BatteryLevel));
++        let is_android = ptp_info.vendor_extension_desc.contains("android.com");
++        let operations = ptp_info
++            .operations_supported
++            .iter()
++            .map(|operation| u16::from(*operation))
++            .collect();
+         Self {
+             session,
+             device_info,
+             capabilities,
+             has_partial_object_64,
+             has_partial_object,
++            has_battery_level,
++            is_android,
++            operations,
+         }
+     }
+ 
+@@ -299,6 +319,26 @@
+             storages.push(neutral);
+         }
+         Ok(storages)
++    }
++
++    fn is_android(&self) -> bool {
++        self.is_android
++    }
++
++    fn supports_operation(&self, code: u16) -> bool {
++        self.operations.contains(&code)
++    }
++
++    async fn battery_level(&self) -> Result<Option<u8>, Error> {
++        if !self.has_battery_level {
++            return Ok(None);
++        }
++        let value = self
++            .session
++            .get_device_prop_value(crate::ptp::DevicePropertyCode::BatteryLevel)
++            .await?;
++        // UINT8, 0-100 percent; anything else is not a level.
++        Ok(value.first().copied().filter(|level| *level <= 100))
+     }
+ 
+     async fn storage_info(&self, storage: StorageId) -> Result<StorageInfo, Error> {
+diff -ruN a/src/mtp/device.rs b/src/mtp/device.rs
+--- a/src/mtp/device.rs	2026-10-18 10:26:17
++++ b/src/mtp/device.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-17): battery level, supported operations (see vendor/README.md).
+ //! MtpDevice - the main entry point for MTP operations.
+ 
+ use crate::mtp::backend::usb::UsbBackend;
+@@ -213,6 +214,28 @@
+     #[must_use]
+     pub fn capabilities(&self) -> &Capabilities {
+         self.backend.capabilities()
++    }
++
++    /// The battery level in percent, or `None` when the device does not report
++    /// one (it does not list the BatteryLevel property). One request.
++    pub async fn battery_level(&self) -> Result<Option<u8>, Error> {
++        self.backend.battery_level().await
++    }
++
++    /// Whether the device is an Android phone or tablet (its MTP server names
++    /// the "android.com" extension). Android reports its release ("15") as the
++    /// device version.
++    #[must_use]
++    pub fn is_android(&self) -> bool {
++        self.backend.is_android()
++    }
++
++    /// Whether the device lists the PTP/MTP operation `code` (for example
++    /// `0x9805`, GetObjectPropList) among those it supports. Asks nothing of
++    /// the device: the list came with its DeviceInfo when it was opened.
++    #[must_use]
++    pub fn supports_operation(&self, code: u16) -> bool {
++        self.backend.supports_operation(code)
+     }
+ 
+     /// Whether the device supports renaming objects.
+diff -ruN a/src/ptp/container.rs b/src/ptp/container.rs
+--- a/src/ptp/container.rs	2026-10-18 10:26:17
++++ b/src/ptp/container.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-18): a response shorter than its header is an error (see vendor/README.md).
+ //! MTP/PTP USB container format.
+ //!
+ //! This module implements the USB container format used for MTP/PTP communication.
+@@ -184,6 +185,25 @@
+     }
+ }
+ 
++
++/// Most bytes one buffered reply (`execute_with_receive`, a session-less
++/// GetDeviceInfo) may hold, headers included. The device is untrusted: its
++/// data header can say 4 GB, or it can go on sending without ever sending a
++/// response, and the whole reply is held in memory until it is parsed. A
++/// download is streamed instead and has no such limit.
++pub(crate) const MAX_BUFFERED_BYTES: usize = 256 * 1024 * 1024;
++
++/// An error when a reply of `bytes` (so far, or as its header says) is more
++/// than `limit` allows.
++pub(crate) fn within_limit(bytes: usize, limit: usize) -> Result<(), crate::PtpError> {
++    if bytes > limit {
++        return Err(crate::PtpError::invalid_data(format!(
++            "reply too large to hold in memory: {bytes} bytes, at most {limit}"
++        )));
++    }
++    Ok(())
++}
++
+ /// Response container from the device.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct ResponseContainer {
+@@ -229,6 +249,16 @@
+             )));
+         }
+ 
++        // The length counts the header: below it the subtraction would wrap
++        // (a panic in a debug build, a multi-exabyte `with_capacity` in a
++        // release one), and the device is not to be trusted with it.
++        if length < HEADER_SIZE {
++            return Err(crate::PtpError::invalid_data(format!(
++                "response container length too small: {} < header size {}",
++                length, HEADER_SIZE
++            )));
++        }
++
+         // Parse parameters
+         let param_bytes = length - HEADER_SIZE;
+         if param_bytes % 4 != 0 {
+@@ -512,6 +542,32 @@
+             0x0D, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x20, 0x01, 0x00, 0x00, 0x00, 0xFF,
+         ];
+         assert!(ResponseContainer::from_bytes(&unaligned).is_err());
++    }
++
++    #[test]
++    fn a_response_whose_length_is_under_the_header_is_an_error_not_a_panic() {
++        // 12 bytes of a response whose length field says less than the
++        // header: 0, 4 and 8 (multiples of four, so the alignment check
++        // alone would not have stopped them).
++        for length in [0u8, 4, 8, 11] {
++            let bytes = [
++                length, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x20, 0x01, 0x00, 0x00, 0x00,
++            ];
++            assert!(
++                ResponseContainer::from_bytes(&bytes).is_err(),
++                "length {length}"
++            );
++        }
++        // Exactly the header is a response with no parameters.
++        let bare = [
++            0x0C, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x20, 0x01, 0x00, 0x00, 0x00,
++        ];
++        assert!(
++            ResponseContainer::from_bytes(&bare)
++                .unwrap()
++                .params
++                .is_empty()
++        );
+     }
+ 
+     // --- EventContainer tests ---
+diff -ruN a/src/ptp/device.rs b/src/ptp/device.rs
+--- a/src/ptp/device.rs	2026-10-18 10:26:17
++++ b/src/ptp/device.rs	2026-10-18 10:26:17
+@@ -1,14 +1,20 @@
++// Modified by open-mtp-client (2026-10-18): the reply is bounded (see vendor/README.md).
+ //! Low-level PTP device API.
+ 
+ use crate::ptp::{
+     container_type, unpack_u32, CommandContainer, ContainerType, DataContainer, DeviceInfo,
+     OperationCode, PtpSession, ResponseCode, ResponseContainer,
+ };
++use crate::ptp::container::within_limit;
+ use crate::transport::{NusbTransport, Transport};
+ use crate::PtpError as Error;
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
++/// Most bytes a session-less GetDeviceInfo reply may hold: a DeviceInfo is a
++/// few kilobytes, so anything near this is the device misbehaving.
++const MAX_DEVICE_INFO_BYTES: usize = 16 * 1024 * 1024;
++
+ /// A low-level PTP device connection.
+ ///
+ /// Use this for camera support or when you need raw PTP operations.
+@@ -123,17 +129,22 @@
+         // Forerunner 955). Accumulate transfers until the full container is in
+         // hand, matching the in-session receive logic.
+         let mut data_payload = Vec::new();
++        // Everything received so far (see `session::execute_with_receive`).
++        let mut received = 0usize;
+         loop {
+             let mut bytes = self.transport.receive_bulk(64 * 1024).await?;
+             if bytes.is_empty() {
+                 return Err(Error::invalid_data("Empty response"));
+             }
++            received = received.saturating_add(bytes.len());
++            within_limit(received, MAX_DEVICE_INFO_BYTES)?;
+ 
+             let ct = container_type(&bytes)?;
+             match ct {
+                 ContainerType::Data => {
+                     if bytes.len() >= 4 {
+                         let total_length = unpack_u32(&bytes[0..4])? as usize;
++                        within_limit(total_length, MAX_DEVICE_INFO_BYTES)?;
+                         while bytes.len() < total_length {
+                             let more = self.transport.receive_bulk(64 * 1024).await?;
+                             if more.is_empty() {
+@@ -141,6 +152,8 @@
+                                     "Incomplete data container: device stopped sending",
+                                 ));
+                             }
++                            received = received.saturating_add(more.len());
++                            within_limit(received, MAX_DEVICE_INFO_BYTES)?;
+                             bytes.extend_from_slice(&more);
+                         }
+                     }
+@@ -187,6 +200,21 @@
+     use super::*;
+     use crate::ptp::pack::{pack_u16, pack_u16_array, pack_u32};
+     use crate::transport::mock::MockTransport;
++
++    #[tokio::test]
++    async fn a_device_info_header_claiming_gigabytes_is_refused() {
++        // The header says 4 GB with nothing behind it: the old loop would
++        // have gone on receiving until the device stopped, holding it all.
++        let mock = Arc::new(MockTransport::new());
++        mock.queue_response(data_container_header(0xFFFF_FFFF));
++        let device = PtpDevice {
++            transport: mock as Arc<dyn Transport>,
++        };
++
++        let err = device.get_device_info().await.unwrap_err();
++
++        assert!(err.to_string().contains("too large"), "{err}");
++    }
+ 
+     #[tokio::test]
+     #[ignore] // Requires real device
+diff -ruN a/src/ptp/pack/mod.rs b/src/ptp/pack/mod.rs
+--- a/src/ptp/pack/mod.rs	2026-10-18 10:26:17
++++ b/src/ptp/pack/mod.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-18): a lone surrogate is U+FFFD, not an error (see vendor/README.md).
+ //! Binary serialization/deserialization primitives for MTP/PTP.
+ //!
+ //! All multi-byte values are little-endian.
+@@ -228,9 +229,11 @@
+         code_units.push(code_unit);
+     }
+ 
+-    // Decode UTF-16 to String
+-    let s = String::from_utf16(&code_units)
+-        .map_err(|_| crate::PtpError::invalid_data("invalid UTF-16 encoding"))?;
++    // Decode UTF-16 to String. A lone surrogate (a name cut in the middle of
++    // an emoji by a phone's own truncation) becomes U+FFFD rather than an
++    // error: this runs for every entry of a folder listing, and one such name
++    // used to fail the listing of the whole folder.
++    let s = String::from_utf16_lossy(&code_units);
+ 
+     Ok((s, required))
+ }
+@@ -391,8 +394,18 @@
+     fn unpack_string_errors() {
+         assert!(unpack_string(&[]).is_err());
+         assert!(unpack_string(&[0x03, 0x41, 0x00]).is_err()); // truncated
+-                                                              // Invalid surrogate pair
+-        assert!(unpack_string(&[0x02, 0x00, 0xD8, 0x00, 0x00]).is_err());
++    }
++
++    #[test]
++    fn a_lone_surrogate_becomes_the_replacement_character_not_an_error() {
++        // 0xD800 with no low surrogate after it, then "a": the entry stays
++        // readable, with the one bad unit replaced.
++        let (s, used) = unpack_string(&[0x03, 0x00, 0xD8, 0x61, 0x00, 0x00, 0x00]).unwrap();
++        assert_eq!(s, "\u{FFFD}a");
++        assert_eq!(used, 7);
++        // A low surrogate on its own, at the end.
++        let (s, _) = unpack_string(&[0x02, 0x61, 0x00, 0x00, 0xDC]).unwrap();
++        assert_eq!(s, "a\u{FFFD}");
+     }
+ 
+     #[test]
+diff -ruN a/src/ptp/session/mod.rs b/src/ptp/session/mod.rs
+--- a/src/ptp/session/mod.rs	2026-10-18 10:26:17
++++ b/src/ptp/session/mod.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-18): buffered replies are bounded (see vendor/README.md).
+ //! PTP session management.
+ //!
+ //! This module provides session-level operations for MTP/PTP communication.
+@@ -13,6 +14,7 @@
+     container_type, pack_u16, pack_u32, unpack_u32, CommandContainer, ContainerType, DataContainer,
+     OperationCode, ResponseCode, ResponseContainer, SessionId, TransactionId,
+ };
++use crate::ptp::container::{within_limit, MAX_BUFFERED_BYTES};
+ use crate::transport::Transport;
+ use crate::PtpError as Error;
+ use futures::lock::Mutex;
+@@ -158,6 +160,9 @@
+     /// because a prior transaction was abandoned mid-flight. Shared via `Arc`
+     /// with [`ReceiveStream`] so a dropped download flags it too.
+     recovery: Arc<RecoveryState>,
++    /// Most bytes a buffered reply may hold (`MAX_BUFFERED_BYTES`; smaller in
++    /// tests, which can't send gigabytes).
++    max_buffered: usize,
+ }
+ 
+ impl PtpSession {
+@@ -170,6 +175,7 @@
+             operation_lock: Arc::new(Mutex::new(())),
+             split_header_data: AtomicBool::new(false),
+             recovery: Arc::new(RecoveryState::default()),
++            max_buffered: MAX_BUFFERED_BYTES,
+         }
+     }
+ 
+@@ -462,12 +468,17 @@
+         // MTP sends data in one or more containers, then response.
+         // A single data container may span multiple USB transfers if larger than 64KB.
+         let mut data = Vec::new();
++        // Everything received so far, headers and empty containers included,
++        // so a device that never stops sending ends here, not in memory.
++        let mut received = 0usize;
+ 
+         loop {
+             let mut bytes = self.transport.receive_bulk(64 * 1024).await?;
+             if bytes.is_empty() {
+                 return Err(Error::invalid_data("Empty response"));
+             }
++            received = received.saturating_add(bytes.len());
++            within_limit(received, self.max_buffered)?;
+ 
+             let ct = container_type(&bytes)?;
+             match ct {
+@@ -476,6 +487,9 @@
+                     // The length field in the header tells us the total container size.
+                     if bytes.len() >= 4 {
+                         let total_length = unpack_u32(&bytes[0..4])? as usize;
++                        // The header is the device's word: refuse a size
++                        // that couldn't be held before buffering any of it.
++                        within_limit(total_length, self.max_buffered)?;
+                         // Keep receiving until we have the complete container
+                         while bytes.len() < total_length {
+                             let more = self.transport.receive_bulk(64 * 1024).await?;
+@@ -484,6 +498,8 @@
+                                     "Incomplete data container: device stopped sending",
+                                 ));
+                             }
++                            received = received.saturating_add(more.len());
++                            within_limit(received, self.max_buffered)?;
+                             bytes.extend_from_slice(&more);
+                         }
+                     }
+@@ -668,6 +684,65 @@
+ 
+         let session = PtpSession::open(transport, 1).await.unwrap();
+         assert_eq!(session.session_id(), SessionId(1));
++    }
++
++    #[tokio::test]
++    async fn a_data_header_claiming_gigabytes_is_refused_before_any_is_buffered() {
++        let (transport, mock) = mock_transport();
++        mock.queue_response(ok_response(0)); // OpenSession
++        let session = PtpSession::open(transport, 1).await.unwrap();
++
++        // A data container whose header says 4 GB, with a few bytes after it:
++        // the rest would be buffered whole before it was parsed.
++        let mut header = data_container(1, OperationCode::GetThumb, &[0u8; 8]);
++        header[0..4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
++        mock.queue_response(header);
++
++        let err = session
++            .execute_with_receive(OperationCode::GetThumb, &[1])
++            .await
++            .unwrap_err();
++
++        assert!(err.to_string().contains("too large"), "{err}");
++    }
++
++    #[tokio::test]
++    async fn a_device_that_never_stops_sending_is_stopped_by_what_it_has_sent() {
++        let (transport, mock) = mock_transport();
++        mock.queue_response(ok_response(0)); // OpenSession
++        let mut session = PtpSession::open(transport, 1).await.unwrap();
++        session.max_buffered = 100;
++
++        // Empty data containers, one after another, and no response: each is
++        // a valid container carrying nothing, so only the running total of
++        // what was received can end it (12 bytes each).
++        for _ in 0..50 {
++            mock.queue_response(data_container(1, OperationCode::GetThumb, &[]));
++        }
++
++        let err = session
++            .execute_with_receive(OperationCode::GetThumb, &[1])
++            .await
++            .unwrap_err();
++
++        assert!(err.to_string().contains("too large"), "{err}");
++    }
++
++    #[tokio::test]
++    async fn a_reply_within_the_limit_is_still_read_whole() {
++        let (transport, mock) = mock_transport();
++        mock.queue_response(ok_response(0)); // OpenSession
++        let mut session = PtpSession::open(transport, 1).await.unwrap();
++        session.max_buffered = 1_000;
++        mock.queue_response(data_container(1, OperationCode::GetThumb, &[7u8; 900]));
++        mock.queue_response(ok_response(1));
++
++        let (_, data) = session
++            .execute_with_receive(OperationCode::GetThumb, &[1])
++            .await
++            .unwrap();
++
++        assert_eq!(data, vec![7u8; 900]);
+     }
+ 
+     /// Dropping an operation's future after it sent its command but before it
+diff -ruN a/src/ptp/session/streaming.rs b/src/ptp/session/streaming.rs
+--- a/src/ptp/session/streaming.rs	2026-10-18 10:26:17
++++ b/src/ptp/session/streaming.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-18): empty reads in a row are bounded (see vendor/README.md).
+ //! Streaming transfer operations.
+ //!
+ //! This module contains the `ReceiveStream` struct and methods for streaming
+@@ -28,6 +29,12 @@
+ /// from the object's `ObjectCompressedSize`.
+ const LARGE_OBJECT_LENGTH_SENTINEL: u32 = 0xFFFF_FFFF;
+ 
++/// Most empty reads in a row a transfer puts up with. A data phase has at most
++/// a couple (its terminator, then the one after a container); a device that
++/// sends nothing else would otherwise keep the loop, and the session lock,
++/// for ever, since an empty read is a read that succeeded.
++const MOST_EMPTY_READS: u32 = 8;
++
+ impl PtpSession {
+     // =========================================================================
+     // Streaming operations
+@@ -126,6 +133,7 @@
+             in_payload: false,
+             short_read: false,
+             expect_zero_length_packet: false,
++            empty_reads: 0,
+             done: false,
+         })
+     }
+@@ -315,6 +323,8 @@
+     /// filled our whole read the device has nothing left to piggyback it on, so it
+     /// arrives as a read of its own.
+     expect_zero_length_packet: bool,
++    /// Empty reads in a row (`MOST_EMPTY_READS`).
++    empty_reads: u32,
+     /// Whether the stream is complete.
+     done: bool,
+ }
+@@ -391,6 +401,13 @@
+             match self.transport.receive_bulk(RECEIVE_CHUNK).await {
+                 Ok(bytes) => {
+                     if bytes.is_empty() {
++                        self.empty_reads += 1;
++                        if self.empty_reads > MOST_EMPTY_READS {
++                            self.done = true;
++                            return Some(Err(Error::invalid_data(
++                                "Device sent nothing but empty packets",
++                            )));
++                        }
+                         // A zero-length packet terminating a data phase: expected right
+                         // after one ended, and the end-of-phase signal itself for a
+                         // >4 GiB container. Anywhere else it means the device went quiet.
+@@ -404,6 +421,7 @@
+                         continue;
+                     }
+                     self.expect_zero_length_packet = false;
++                    self.empty_reads = 0;
+                     self.short_read = bytes.len() < RECEIVE_CHUNK;
+                     self.buffer.extend_from_slice(&bytes);
+                 }
+@@ -752,6 +770,29 @@
+             peak_buffer <= 8 * BULK_READ,
+             "buffer grew to {peak_buffer} bytes"
+         );
++    }
++
++    #[tokio::test]
++    async fn a_device_that_sends_only_empty_packets_ends_the_download_with_an_error() {
++        // A "4 GB or more" header for an object whose size the caller doesn't
++        // know, then nothing but empty packets: no payload is ever yielded, so
++        // the short-packet end of the data phase never applies, and every
++        // empty read is a read that worked.
++        let (transport, mock) = mock_transport();
++        mock.queue_response(ok_response(0)); // OpenSession
++        let mut header = data_container(1, OperationCode::GetObject, &[]);
++        header[0..4].copy_from_slice(&LARGE_OBJECT_LENGTH_SENTINEL.to_le_bytes());
++        mock.queue_response(header);
++        for _ in 0..50 {
++            mock.queue_response(Vec::new());
++        }
++        let session = Arc::new(PtpSession::open(transport, 1).await.unwrap());
++        let mut stream = session.get_object_stream(ObjectHandle(1)).await.unwrap();
++
++        let ended = stream.next_chunk().await.unwrap().unwrap_err();
++
++        assert!(ended.to_string().contains("empty packets"), "{ended}");
++        assert!(stream.next_chunk().await.is_none(), "and it stays ended");
+     }
+ 
+     #[tokio::test]
+diff -ruN a/src/transport/virtual_device/builders.rs b/src/transport/virtual_device/builders.rs
+--- a/src/transport/virtual_device/builders.rs	2026-10-18 10:26:17
++++ b/src/transport/virtual_device/builders.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
+ //! Binary payload builders for virtual device responses.
+ //!
+ //! These functions produce the binary payloads that get wrapped in data containers
+@@ -20,8 +21,12 @@
+     buf.extend_from_slice(&pack_u32(6));
+     // VendorExtensionVersion: 100
+     buf.extend_from_slice(&pack_u16(100));
+-    // VendorExtensionDesc: "microsoft.com: 1.0"
+-    buf.extend_from_slice(&pack_string("microsoft.com: 1.0"));
++    // VendorExtensionDesc: "microsoft.com: 1.0", and Android's own when it is one
++    buf.extend_from_slice(&pack_string(if state.config.android {
++        "microsoft.com: 1.0; android.com: 1.0"
++    } else {
++        "microsoft.com: 1.0"
++    }));
+     // FunctionalMode: 0 (standard)
+     buf.extend_from_slice(&pack_u16(0));
+ 
+@@ -52,6 +57,9 @@
+     if state.config.supports_rename {
+         ops.push(OperationCode::SetObjectPropValue.into());
+     }
++    if state.config.battery_level.is_some() {
++        ops.push(OperationCode::GetDevicePropValue.into());
++    }
+     buf.extend_from_slice(&pack_u16_array(&ops));
+ 
+     // EventsSupported
+@@ -62,8 +70,12 @@
+     ];
+     buf.extend_from_slice(&pack_u16_array(&events));
+ 
+-    // DevicePropertiesSupported: empty
+-    buf.extend_from_slice(&pack_u16_array(&[]));
++    // DevicePropertiesSupported: BatteryLevel when the device has one
++    let properties: Vec<u16> = match state.config.battery_level {
++        Some(_) => vec![crate::ptp::DevicePropertyCode::BatteryLevel.into()],
++        None => Vec::new(),
++    };
++    buf.extend_from_slice(&pack_u16_array(&properties));
+     // CaptureFormats: empty
+     buf.extend_from_slice(&pack_u16_array(&[]));
+     // PlaybackFormats: common formats
+diff -ruN a/src/transport/virtual_device/config.rs b/src/transport/virtual_device/config.rs
+--- a/src/transport/virtual_device/config.rs	2026-10-18 10:26:17
++++ b/src/transport/virtual_device/config.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
+ //! Configuration types for virtual MTP devices.
+ 
+ use std::path::PathBuf;
+@@ -43,6 +44,11 @@
+     pub storages: Vec<VirtualStorageConfig>,
+     /// Whether the device advertises SetObjectPropValue support (rename).
+     pub supports_rename: bool,
++    /// The battery level the device reports (BatteryLevel, 0-100), or `None`
++    /// for a device that does not list the property.
++    pub battery_level: Option<u8>,
++    /// Name the "android.com" vendor extension, as an Android phone does.
++    pub android: bool,
+     /// Whether the device advertises `GetPartialObject64` (0x95C1), the 64-bit
+     /// offset partial read. Real Android devices do; many PTP cameras (e.g. the
+     /// Panasonic Lumix DMC-TZ61) only advertise the 32-bit `GetPartialObject`.
+@@ -150,6 +156,8 @@
+             serial: "virtual-0001".into(),
+             storages: Vec::new(),
+             supports_rename: true,
++            battery_level: None,
++            android: false,
+             supports_partial_object_64: true,
+             supports_partial_object: true,
+             event_poll_interval: Duration::from_millis(50),
+diff -ruN a/src/transport/virtual_device/handlers.rs b/src/transport/virtual_device/handlers.rs
+--- a/src/transport/virtual_device/handlers.rs	2026-10-18 10:26:17
++++ b/src/transport/virtual_device/handlers.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
+ //! Protocol operation handlers for the virtual device.
+ //!
+ //! Each handler processes an incoming MTP command and queues response (and optionally
+@@ -23,6 +24,7 @@
+ const INVALID_OBJECT_HANDLE: u16 = 0x2009;
+ const STORE_READ_ONLY: u16 = 0x200E;
+ const NO_THUMBNAIL: u16 = 0x2010;
++const DEVICE_PROP_NOT_SUPPORTED: u16 = 0x200A;
+ const SESSION_ALREADY_OPEN: u16 = 0x201E;
+ const INVALID_PARENT: u16 = 0x201A;
+ 
+@@ -80,6 +82,12 @@
+                     handle_get_partial_object_64(state, op_code, tx_id, params)
+                 }
+                 OperationCode::GetThumb => handle_get_thumb(state, tx_id, params),
++                OperationCode::GetDevicePropValue if state.config.battery_level.is_none() => {
++                    unsupported(state, tx_id)
++                }
++                OperationCode::GetDevicePropValue => {
++                    handle_get_device_prop_value(state, op_code, tx_id, params)
++                }
+                 OperationCode::SendObjectInfo => {
+                     handle_send_object_info(state, tx_id, params, data_payload)
+                 }
+@@ -96,6 +104,29 @@
+                 _ => unsupported(state, tx_id),
+             }
+         }
++    }
++}
++
++/// GetDevicePropValue: BatteryLevel as one byte; any other property is not supported.
++fn handle_get_device_prop_value(
++    state: &mut VirtualDeviceState,
++    op_code: u16,
++    tx_id: u32,
++    params: &[u32],
++) {
++    let battery = u32::from(u16::from(crate::ptp::DevicePropertyCode::BatteryLevel));
++    match (params.first(), state.config.battery_level) {
++        (Some(&property), Some(level)) if property == battery => {
++            state
++                .response_queue
++                .push_back(build_data_container(op_code, tx_id, &[level]));
++            state
++                .response_queue
++                .push_back(build_response(OK, tx_id, &[]));
++        }
++        _ => state
++            .response_queue
++            .push_back(build_response(DEVICE_PROP_NOT_SUPPORTED, tx_id, &[])),
+     }
+ }
+ 
+diff -ruN a/src/transport/virtual_device/registry.rs b/src/transport/virtual_device/registry.rs
+--- a/src/transport/virtual_device/registry.rs	2026-10-18 10:26:17
++++ b/src/transport/virtual_device/registry.rs	2026-10-18 10:26:17
+@@ -1,3 +1,4 @@
++// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
+ //! Global registry of virtual devices for discovery integration.
+ //!
+ //! Virtual devices registered here appear in `MtpDevice::list_devices()` and
+@@ -487,6 +488,30 @@
+     };
+     drop(active); // Release the registry lock before acquiring the state lock.
+     state_arc.lock().unwrap().pending_operation_wedge = true;
++    true
++}
++
++/// Change the battery level an open virtual device reports (as a phone's does
++/// while it charges), and announce it with a `DevicePropChanged` event for
++/// BatteryLevel, as Android does. Returns `false` if no open device has that
++/// serial. A device opened without a level keeps reporting none: what it
++/// supports was fixed at open.
++pub fn set_virtual_battery_level(serial: &str, level: u8) -> bool {
++    let active = active_states().lock().unwrap();
++    let state_arc = match active.iter().find(|(s, _)| s == serial) {
++        Some((_, state)) => Arc::clone(state),
++        None => return false,
++    };
++    drop(active); // Release the registry lock before acquiring the state lock.
++    let mut state = state_arc.lock().unwrap();
++    if state.config.battery_level.is_some() {
++        state.config.battery_level = Some(level);
++        let battery = u32::from(u16::from(crate::ptp::DevicePropertyCode::BatteryLevel));
++        state.event_queue.push_back(super::builders::build_event(
++            crate::ptp::EventCode::DevicePropChanged,
++            &[battery],
++        ));
++    }
+     true
+ }
+ 

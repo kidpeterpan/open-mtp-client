@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem privately
+    url: https://github.com/kidpeterpan/open-mtp-client/security/advisories/new
+    about: Please don't open a public issue for a vulnerability.
+  - name: Support the project
+    url: https://buymeacoffee.com/kidpeterpan
+    about: open-mtp-client is free. If it helped, you can buy the author a coffee.
