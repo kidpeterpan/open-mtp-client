@@ -829,8 +829,9 @@ async fn retrying_the_move_of_a_five_thousand_file_folder_sends_nothing_again() 
     assert_eq!(v.names("Download").len(), 1);
     assert!(!v.exists("Music/Big"), "the originals went");
     // One listing of the folder, found by name after that: not a search for
-    // each of 5,000 files.
-    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    // each of 5,000 files. A search per file would take far longer than this,
+    // and the limit leaves room for a slow machine (a CI runner takes ~3x).
+    assert!(started.elapsed() < std::time::Duration::from_secs(60));
 }
 
 #[tokio::test]
