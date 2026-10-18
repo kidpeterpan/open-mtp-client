@@ -16,7 +16,7 @@ jobs:
     name: Build and publish
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check the tag matches the version in Cargo.toml
         run: |
