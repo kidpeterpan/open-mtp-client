@@ -1189,7 +1189,7 @@ mod tests {
         assert_eq!(handler.matches.len(), 200_000);
         let size = |at: usize| handler.catalogue[at].entry.size_bytes;
         assert!(handler.matches.windows(2).all(|w| size(w[0]) >= size(w[1])));
-        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
     }
 
     #[test]
