@@ -1,6 +1,6 @@
 VIRTUAL_PHONE ?= $(CURDIR)/.virtual-phone
 
-.PHONY: run run-virtual run-virtual-two build release universal app icon test test-intel test-large test-vendor cli lint fmt coverage
+.PHONY: run run-virtual run-virtual-two build release universal app dmg icon test test-intel test-large test-vendor cli lint fmt coverage
 
 # Line coverage the workspace must keep.
 COVERAGE_MIN ?= 75
@@ -30,6 +30,7 @@ release:
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 APP := dist/open-mtp-client.app
+DMG := dist/open-mtp-client-$(VERSION).dmg
 ICONSET := target/open-mtp-client.iconset
 
 # Redraws assets/icon-1024.png (checked in, so this is only needed after
@@ -81,6 +82,18 @@ app: universal
 	codesign --verify --strict $(APP)
 	$(APP)/Contents/MacOS/open-mtp-client-cli --help >/dev/null
 	@echo "Built $(APP)"
+
+# A disk image to hand to users: open it and drag the app onto Applications.
+# Plain `hdiutil`, so it needs nothing installed and no Finder session.
+dmg: app
+	rm -rf dist/dmg $(DMG)
+	mkdir -p dist/dmg
+	cp -R $(APP) dist/dmg/
+	ln -s /Applications dist/dmg/Applications
+	hdiutil create -volname "open-mtp-client" -srcfolder dist/dmg -fs HFS+ -format UDZO -ov $(DMG)
+	rm -rf dist/dmg
+	hdiutil verify $(DMG)
+	@echo "Built $(DMG)"
 
 test:
 	cargo test --workspace

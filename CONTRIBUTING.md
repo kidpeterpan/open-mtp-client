@@ -87,6 +87,18 @@ many details. Read the part that matches what you are changing.
 
 By contributing you agree that your contribution is licensed under the [MIT License](LICENSE).
 
+## Releasing (maintainers)
+
+A release is a git tag. The `Release` workflow builds the universal app, packs it into a `.dmg`, and attaches it
+(with a checksum) to a new GitHub release.
+
+1. Set `version` in `Cargo.toml` (and let `Cargo.lock` follow with `cargo build`). Merge it.
+2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`. The tag must match the version, or the workflow stops.
+3. Check the release page, then edit its notes if you want.
+
+`make dmg` builds the same file locally in `dist/`. Releases are signed ad hoc, not notarized: notarizing needs a
+paid Apple Developer account. The README tells users how to open the app anyway.
+
 ## Conduct
 
 Be kind and assume good intent. Harassment isn't tolerated; maintainers may remove comments or contributors

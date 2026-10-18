@@ -64,22 +64,21 @@ jobs:
             vendor/mtp-rs
       - run: make test-vendor
 
-  # Builds the same app a user would: Apple Silicon and Intel halves joined, signed ad hoc,
-  # and the bundled command-line tool run once. Fails if either architecture is missing.
+  # Builds what a user would download: Apple Silicon and Intel halves joined, signed ad hoc,
+  # the bundled command-line tool run once, and the app packed into a dmg.
+  # Fails if either architecture is missing.
   app:
-    name: Build the universal app
+    name: Build the universal app and dmg
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: make app
-      - name: Zip the app (ditto keeps the bundle intact)
-        run: ditto -c -k --keepParent dist/open-mtp-client.app dist/open-mtp-client.zip
+      - run: make dmg
       - uses: actions/upload-artifact@v4
         with:
-          name: open-mtp-client-macos
-          path: dist/open-mtp-client.zip
+          name: open-mtp-client-dmg
+          path: dist/*.dmg
           if-no-files-found: error
           retention-days: 7
 

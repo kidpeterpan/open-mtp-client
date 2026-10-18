@@ -30,7 +30,26 @@ and checks every file.
 
 ## Install
 
-You need macOS 11 or later (Apple Silicon or Intel). There are no downloads yet, so build it. It takes a few minutes.
+You need macOS 11 or later (Apple Silicon or Intel).
+
+### Download (easiest)
+
+1. Get the latest `.dmg` from the [Releases page](https://github.com/kidpeterpan/open-mtp-client/releases/latest).
+2. Open it and drag **open-mtp-client** onto **Applications**.
+3. Open the app.
+
+The first time, macOS says it can't check the app for malware. That is because the app is not notarized yet
+(Apple charges a yearly fee for that). It is safe to open if you downloaded it from this page:
+
+- **macOS 15 or later:** try to open the app, then go to **System Settings > Privacy & Security**,
+  scroll down and click **Open Anyway**.
+- **macOS 14 or earlier:** right-click the app, choose **Open**, then **Open** again.
+
+You only do this once. Prefer not to trust a download? Build it yourself below.
+
+### Build from source
+
+It takes a few minutes.
 
 ```sh
 # 1. Compiler tools
@@ -48,8 +67,7 @@ make app
 open dist/open-mtp-client.app
 ```
 
-Drag `dist/open-mtp-client.app` to Applications if you like. If you copy it to another Mac, macOS may block it.
-Right-click it and choose **Open**.
+An app you build yourself opens without the warning above. Run `make dmg` to make the same `.dmg` as the release.
 
 Want to try it with no phone? Run `make run-virtual`.
 
