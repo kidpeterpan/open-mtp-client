@@ -8,6 +8,8 @@ Copy files between your Mac and your Android phone. It tells you what is wrong w
 
 A free, open source Mac app written in Rust. No telemetry. No network code.
 
+Website: [kidpeterpan.github.io/open-mtp-client](https://kidpeterpan.github.io/open-mtp-client/)
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
   <img alt="open-mtp-client showing a phone's camera folder next to a Mac folder" src="docs/screenshots/main-light.png">
