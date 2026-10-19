@@ -11,6 +11,16 @@ updates:
         patterns: ["iced*"]
       objc2:
         patterns: ["objc2*", "block2"]
+    ignore:
+      # winit 0.30 (through iced 0.14) is on objc2 0.5, and so is our AppKit code
+      # (internal/service/local/{menubar,dock,share,awake,screens}.rs). 0.6 renames
+      # declare_class! to define_class!, so it is a code change rather than a bump
+      # (PR #4 failed to compile). Patch releases still come; drop this with the
+      # iced/winit upgrade.
+      - dependency-name: "objc2*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "block2"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
