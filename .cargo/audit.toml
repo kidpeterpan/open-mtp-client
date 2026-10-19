@@ -1,0 +1,141 @@
+# Advisories this project knowingly accepts, and why.
+#
+# Only advisory ids are listed, never crate names: an id hides exactly that advisory, and
+# every other advisory, including a new one against the same crate, is still reported.
+#
+# An entry is the block above its quoted id: a "# --- <ID> ---" line, then these keys in this
+# order: Crate, Issue, Accepted, Review by, Platform scope, Reason, Evidence, Expect, Remove when.
+# A value may continue on the next lines, which start with "#" and three spaces.
+# internal/tests/audit_ledger.rs checks the layout.
+
+[advisories]
+ignore = [
+    # --- RUSTSEC-2024-0436 -------------------------------------------------------
+    # Crate: paste 1.0.15 (unmaintained)
+    # Issue: #8
+    # Accepted: 2026-10-19
+    # Review by: 2027-04-19
+    # Platform scope: any
+    # Reason: A procedural macro: it runs while the app is compiled and is not part of the
+    #   running app. Reached through metal and wgpu-hal.
+    # Evidence: Needs registry access; on a checkout that was never built, run this first:
+    #   cargo fetch --locked
+    #   cargo tree --locked --workspace -e normal,build,dev -i paste --target aarch64-apple-darwin
+    #   cargo tree --locked --workspace -e normal,build,dev -i paste --target x86_64-apple-darwin
+    # Expect: Both print "paste v1.0.15 (proc-macro)", reached through metal v0.32.0 and
+    #   wgpu-hal v27.0.4.
+    # Remove when: The iced upgrade lands and the commands above no longer list paste.
+    "RUSTSEC-2024-0436",
+
+    # --- RUSTSEC-2026-0192 -------------------------------------------------------
+    # Crate: ttf-parser 0.25.1 (unmaintained)
+    # Issue: #9
+    # Accepted: 2026-10-19
+    # Review by: 2027-04-19
+    # Platform scope: any
+    # Reason: Only fonts that belong to the Mac or to iced reach it: the Mac's installed system
+    #   fonts, loaded by cosmic-text, and iced's bundled Iced-Icons.ttf (test builds also
+    #   bundle Fira Sans, through iced_test). Our own code loads no fonts, SVG rendering is not
+    #   built, and no phone file or file the user opened reaches the parser. The crate also
+    #   forbids unsafe code. The installed fonts include any the user installed themselves,
+    #   which is the user's own machine.
+    # Evidence: Needs registry access; on a checkout that was never built, run this first:
+    #   cargo fetch --locked
+    #   cargo tree --locked --workspace -e normal --target aarch64-apple-darwin -i ttf-parser
+    #   git grep -n -E 'load_font|font::load|FontSystem|fontdb' -- 'cmd/**/*.rs' 'internal/**/*.rs'
+    #   grep -n 'load_system_fonts' ~/.cargo/registry/src/*/cosmic-text-0.15.0/src/font/system.rs
+    #   sed -n 112,136p ~/.cargo/registry/src/*/iced_graphics-0.14.0/src/text.rs
+    #   cargo tree --locked --workspace -e normal,build,dev -i usvg --target aarch64-apple-darwin
+    #   cargo tree --locked --workspace -e normal,build,features --target aarch64-apple-darwin -i iced_renderer | grep -c fira
+    #   grep -n 'forbid(unsafe_code)' ~/.cargo/registry/src/*/ttf-parser-0.25.1/src/lib.rs
+    # Expect: The tree shows ttf-parser reached only through fontdb and cosmic-text. The git
+    #   grep prints nothing. load_system_fonts is called at line 400. The sed output includes
+    #   Iced-Icons.ttf and, under cfg(feature = "fira-sans"), Fira Sans. The usvg command fails
+    #   with "did not match any packages", so SVG text is not built. The fira count is 0 (the
+    #   shipped app does not bundle Fira Sans). The last grep finds line 36.
+    # Remove when: The iced upgrade lands and the first tree no longer lists ttf-parser (delete
+    #   the entry). Reconsider at once if any output above changes: a font-loading call in our
+    #   code, usvg in the tree, or any route that carries a phone's or a user's file.
+    "RUSTSEC-2026-0192",
+
+    # --- RUSTSEC-2026-0371 -------------------------------------------------------
+    # Crate: zbus_names 4.3.4 (unmaintained)
+    # Issue: #10
+    # Accepted: 2026-10-19
+    # Review by: 2027-04-19
+    # Platform scope: macos-only
+    # Reason: Not built for either Mac target. It is reached only through mundy and
+    #   iced_winit, on other platforms. If a non-macOS build target is ever added, this no
+    #   longer holds.
+    # Evidence: Needs registry access; on a checkout that was never built, run this first:
+    #   cargo fetch --locked
+    #   cargo tree --locked --workspace -e normal,build,dev -i zbus_names --target aarch64-apple-darwin
+    #   cargo tree --locked --workspace -e normal,build,dev -i zbus_names --target x86_64-apple-darwin
+    #   cargo tree --locked --workspace -e normal,build,dev -i lru --target x86_64-apple-darwin
+    # Expect: The first two print "warning: nothing to print." The third, for comparison,
+    #   prints a tree, so the command works.
+    # Remove when: The iced upgrade lands and "-i zbus_names --target all" no longer lists the
+    #   crate (delete the entry). If a non-macOS build target is added, reconsider it instead.
+    "RUSTSEC-2026-0371",
+
+    # --- RUSTSEC-2026-0370 -------------------------------------------------------
+    # Crate: zvariant 5.15.0 (unmaintained)
+    # Issue: #11
+    # Accepted: 2026-10-19
+    # Review by: 2027-04-19
+    # Platform scope: macos-only
+    # Reason: Not built for either Mac target. It is reached only through mundy and
+    #   iced_winit, on other platforms. If a non-macOS build target is ever added, this no
+    #   longer holds.
+    # Evidence: Needs registry access; on a checkout that was never built, run this first:
+    #   cargo fetch --locked
+    #   cargo tree --locked --workspace -e normal,build,dev -i zvariant --target aarch64-apple-darwin
+    #   cargo tree --locked --workspace -e normal,build,dev -i zvariant --target x86_64-apple-darwin
+    #   cargo tree --locked --workspace -e normal,build,dev -i lru --target x86_64-apple-darwin
+    # Expect: The first two print "warning: nothing to print." The third, for comparison,
+    #   prints a tree, so the command works.
+    # Remove when: The iced upgrade lands and "-i zvariant --target all" no longer lists the
+    #   crate (delete the entry). If a non-macOS build target is added, reconsider it instead.
+    "RUSTSEC-2026-0370",
+
+    # --- RUSTSEC-2026-0372 -------------------------------------------------------
+    # Crate: zvariant_derive 5.15.0 (unmaintained)
+    # Issue: #12
+    # Accepted: 2026-10-19
+    # Review by: 2027-04-19
+    # Platform scope: macos-only
+    # Reason: Not built for either Mac target. It is reached only through mundy and
+    #   iced_winit, on other platforms. If a non-macOS build target is ever added, this no
+    #   longer holds.
+    # Evidence: Needs registry access; on a checkout that was never built, run this first:
+    #   cargo fetch --locked
+    #   cargo tree --locked --workspace -e normal,build,dev -i zvariant_derive --target aarch64-apple-darwin
+    #   cargo tree --locked --workspace -e normal,build,dev -i zvariant_derive --target x86_64-apple-darwin
+    #   cargo tree --locked --workspace -e normal,build,dev -i lru --target x86_64-apple-darwin
+    # Expect: The first two print "warning: nothing to print." The third, for comparison,
+    #   prints a tree, so the command works.
+    # Remove when: The iced upgrade lands and "-i zvariant_derive --target all" no longer lists
+    #   the crate (delete the entry). If a non-macOS build target is added, reconsider it instead.
+    "RUSTSEC-2026-0372",
+
+    # --- RUSTSEC-2026-0253 -------------------------------------------------------
+    # Crate: lru 0.16.4 (unsound)
+    # Issue: #13
+    # Accepted: 2026-10-19
+    # Review by: 2027-04-19
+    # Platform scope: any
+    # Reason: The advisory needs a cache key whose Drop can panic. The key, CacheKey, is
+    #   Copy, so it cannot have a Drop, and cryoglyph never calls LruCache::pop.
+    # Evidence: Needs registry access; on a checkout that was never built, run this first:
+    #   cargo fetch --locked
+    #   cargo tree --locked --workspace -e normal,build,dev -i lru --target aarch64-apple-darwin
+    #   grep -n -B3 'pub struct CacheKey' ~/.cargo/registry/src/*/cosmic-text-0.15.0/src/glyph_cache.rs
+    #   grep -rn 'impl.*Drop' ~/.cargo/registry/src/*/cosmic-text-0.15.0/src ~/.cargo/registry/src/*/cryoglyph-0.1.0/src
+    #   grep -rn 'glyph_cache\.' ~/.cargo/registry/src/*/cryoglyph-0.1.0/src
+    # Expect: The tree shows lru v0.16.4 reached through cryoglyph. CacheKey derives
+    #   "Clone, Copy". The Drop search prints nothing. The glyph_cache calls are peek_lru,
+    #   pop_lru, get and get_or_insert, never pop.
+    # Remove when: The iced upgrade lands and the first command no longer shows lru 0.16.x.
+    #   Reconsider at once if CacheKey stops being Copy or cryoglyph starts calling pop.
+    "RUSTSEC-2026-0253",
+]
