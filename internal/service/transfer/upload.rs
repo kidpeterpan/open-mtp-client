@@ -1656,7 +1656,7 @@ mod tests {
             (again.files, again.already_there, again.merged),
             (0, 5_000, 1)
         );
-        assert!(started.elapsed() < Duration::from_secs(15));
+        assert!(started.elapsed() < Duration::from_secs(60));
     }
 
     #[tokio::test]

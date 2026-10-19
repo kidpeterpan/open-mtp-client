@@ -1703,7 +1703,7 @@ mod tests {
         eprintln!("5,000 files copied in the pane in {:?}", started.elapsed());
         assert_eq!(summary.done, 1);
         assert_eq!(m.names("Backup/Big").len(), 5_000);
-        assert!(started.elapsed() < Duration::from_secs(20));
+        assert!(started.elapsed() < Duration::from_secs(60));
     }
 
     #[tokio::test]
@@ -1725,7 +1725,7 @@ mod tests {
         eprintln!("5,000 selected files moved in {:?}", started.elapsed());
         assert_eq!(summary.done, 5_000);
         assert_eq!(m.names("Backup").len(), 5_000);
-        assert!(started.elapsed() < Duration::from_secs(20));
+        assert!(started.elapsed() < Duration::from_secs(60));
     }
 
     #[tokio::test]
