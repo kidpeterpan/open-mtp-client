@@ -33,11 +33,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 sha2 = "0.11"
 # The Dock icon's progress bar and notifications (local/dock.rs): the same
 # versions winit already builds the window with.
-objc2 = "0.5"
-block2 = "0.5"
-objc2-foundation = { version = "0.2", features = ["NSBundle", "NSData", "NSDate", "NSDictionary", "NSError", "NSGeometry", "NSObjCRuntime", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSArray", "NSURL"] }
-objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSBitmapImageRep", "NSBox", "NSCell", "NSColor", "NSControl", "NSDockTile", "NSImage", "NSImageRep", "NSEvent", "NSGraphicsContext", "NSImageView", "NSMenu", "NSMenuItem", "NSProgressIndicator", "NSResponder", "NSRunningApplication", "NSSharingService", "NSView", "NSWindow"] }
-objc2-user-notifications = { version = "0.2", features = ["block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSBundle", "NSData", "NSDate", "NSDictionary", "NSError", "NSGeometry", "NSObjCRuntime", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSArray", "NSURL"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSBitmapImageRep", "NSBox", "NSCell", "NSColor", "NSControl", "NSDockTile", "NSImage", "NSImageRep", "NSEvent", "NSGraphicsContext", "NSImageView", "NSMenu", "NSMenuItem", "NSProgressIndicator", "NSResponder", "NSRunningApplication", "NSSharingService", "NSView", "NSWindow"] }
+objc2-user-notifications = { version = "0.3", features = ["block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
 # mtp-rs 0.33 has no way to read a device property (battery level) from an
 # open device; vendor/mtp-rs is 0.33.0 with that added (vendor/README.md).
