@@ -7,11 +7,13 @@ on:
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/security.yml"
+      - ".cargo/audit.toml"
   pull_request:
     paths:
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/security.yml"
+      - ".cargo/audit.toml"
   schedule:
     # Advisories appear without any change here, so check weekly too.
     - cron: "17 3 * * 1"
