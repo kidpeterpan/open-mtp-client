@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
-use iced::widget::{button, column, container, radio, row, rule, space, text, toggler};
+use iced::widget::{
+    button, column, container, radio, responsive, row, rule, scrollable, space, text, toggler,
+};
 use iced::{Alignment, Element, Length, Task};
 use internal::dto;
 
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::i18n::{english_only, t};
 
 pub trait Service: Send + Sync {
     fn load(&self) -> dto::Settings;
@@ -131,6 +134,10 @@ impl Handler {
             .map(error::to_error_response);
     }
 
+    pub fn language_changed(&mut self) {
+        self.save_error = self.save_error.as_ref().map(ErrorResponse::reworded);
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let Message::Request(request) = message;
         match request {
@@ -147,11 +154,21 @@ impl Handler {
             Request::SetFinishSound(on) => self.change(|s| s.finish_sound = on),
             Request::SetKeepDeleted(on) => self.change(|s| s.keep_deleted = on),
             Request::SetDensity(density) => self.change(|s| s.list_density = density),
+            Request::SetLanguage(choice) => self.change(|s| s.language = choice),
         }
         Task::none()
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        responsive(move |size| {
+            container(self.dialog(size.height))
+                .center(Length::Fill)
+                .into()
+        })
+        .into()
+    }
+
+    fn dialog(&self, window_height: f32) -> Element<'_, Message> {
         let settings = &self.settings;
         let send = |request| Message::Request(request);
         let theme_choice = |label, choice| {
@@ -175,11 +192,23 @@ impl Handler {
             .text_size(14)
         };
         let heading = |title| text(title).size(13).style(text::secondary);
+        let language_list =
+            language_choices()
+                .into_iter()
+                .fold(column![].spacing(6), |list, (choice, label)| {
+                    list.push(
+                        radio(label, choice, Some(settings.language), |c| {
+                            send(Request::SetLanguage(c))
+                        })
+                        .size(16)
+                        .text_size(14),
+                    )
+                });
 
         let mut layout = column![
-            heading("Layout"),
+            heading(t("settings.heading.layout")),
             switch(
-                "Show Mac files",
+                t("settings.show_mac"),
                 settings.show_mac_pane,
                 Request::SetShowMacPane
             ),
@@ -187,7 +216,7 @@ impl Handler {
         .spacing(10);
         if settings.show_mac_pane {
             layout = layout.push(switch(
-                "Mac files on the left",
+                t("settings.mac_left"),
                 settings.mac_pane_on_left,
                 Request::SetMacPaneOnLeft,
             ));
@@ -195,67 +224,70 @@ impl Handler {
 
         let mut content = column![
             row![
-                text("Settings").size(20),
+                text(t("settings.title")).size(20),
                 space::horizontal(),
-                button(text("Done"))
+                button(text(t("label.done")))
                     .style(button::primary)
                     .on_press(send(Request::Close)),
             ]
             .align_y(Alignment::Center),
             rule::horizontal(1),
-            heading("Appearance"),
+            heading(t("settings.language.title")),
+            language_list,
+            rule::horizontal(1),
+            heading(t("settings.heading.appearance")),
             row![
-                theme_choice("Match the Mac", dto::ThemeChoice::Auto),
-                theme_choice("Light", dto::ThemeChoice::Light),
-                theme_choice("Dark", dto::ThemeChoice::Dark),
+                theme_choice(t("settings.theme.auto"), dto::ThemeChoice::Auto),
+                theme_choice(t("settings.theme.light"), dto::ThemeChoice::Light),
+                theme_choice(t("settings.theme.dark"), dto::ThemeChoice::Dark),
             ]
             .spacing(16),
             rule::horizontal(1),
-            heading("Files"),
+            heading(t("settings.heading.files")),
             switch(
-                "Show hidden files on the Mac",
+                t("settings.show_hidden_mac"),
                 settings.show_hidden_on_mac,
                 Request::SetShowHiddenOnMac,
             ),
             switch(
-                "Show hidden files on the phone",
+                t("settings.show_hidden_phone"),
                 settings.show_hidden_on_phone,
                 Request::SetShowHiddenOnPhone,
             ),
             switch(
-                "Folders first",
+                t("settings.folders_first"),
                 settings.folders_first,
                 Request::SetFoldersFirst
             ),
             switch(
-                "Status bar under each pane",
+                t("settings.status_bar"),
                 settings.status_bar,
                 Request::SetStatusBar,
             ),
             row![
-                text("Rows").size(14),
-                density("Compact", dto::Density::Compact),
-                density("Standard", dto::Density::Standard),
-                density("Large", dto::Density::Large),
+                text(t("settings.rows")).size(14),
+                density(t("settings.density.compact"), dto::Density::Compact),
+                density(t("settings.density.standard"), dto::Density::Standard),
+                density(t("settings.density.large"), dto::Density::Large),
             ]
             .spacing(16)
             .align_y(Alignment::Center),
             rule::horizontal(1),
             layout,
             rule::horizontal(1),
-            heading("Phone and transfers"),
+            heading(t("settings.heading.phone")),
             switch(
-                "Connect when a phone is plugged in",
+                t("settings.auto_connect"),
                 settings.auto_connect,
                 Request::SetAutoConnect,
             ),
             switch(
-                "Play a sound when transfers finish",
+                t("settings.finish_sound"),
                 settings.finish_sound,
                 Request::SetFinishSound,
             ),
             switch(
-                "Keep a copy of what I delete from the phone in the Trash",
+                t("settings.keep_deleted"),
                 settings.keep_deleted,
                 Request::SetKeepDeleted,
             ),
@@ -273,21 +305,39 @@ impl Handler {
             );
         }
 
-        container(content)
+        container(scrollable(content.padding([0, 12])))
             .padding(24)
             .width(Length::Fixed(440.0))
+            .max_height((window_height - DIALOG_MARGIN).max(DIALOG_LEAST))
             .style(container::rounded_box)
             .into()
     }
+}
+
+const DIALOG_MARGIN: f32 = 32.0;
+const DIALOG_LEAST: f32 = 200.0;
+
+fn language_choices() -> Vec<(dto::LanguageChoice, String)> {
+    let follow_the_mac = (
+        dto::LanguageChoice::FollowMac,
+        t("settings.language.follow_mac").to_owned(),
+    );
+    let languages = dto::Language::ALL.into_iter().map(|language| {
+        (
+            dto::LanguageChoice::Chosen(language),
+            language.native_name().to_owned(),
+        )
+    });
+    std::iter::once(follow_the_mac).chain(languages).collect()
 }
 
 /// "open-mtp-client 0.1.0", what it is and what it's built on; iced apps have no
 /// app menu to hold an About window, so it lives at the foot of Settings.
 fn about_lines() -> [String; 3] {
     [
-        format!("open-mtp-client {}", env!("CARGO_PKG_VERSION")),
-        "Android ↔ Mac file transfer. Written in Rust, with no telemetry.".to_owned(),
-        "Built with iced and mtp-rs · github.com/kidpeterpan/open-mtp-client".to_owned(),
+        english_only(format!("open-mtp-client {}", env!("CARGO_PKG_VERSION"))),
+        t("settings.about.what").to_owned(),
+        t("settings.about.credits").to_owned(),
     ]
 }
 
@@ -479,6 +529,130 @@ mod tests {
             memory.saved.lock().unwrap().last().map(|s| s.list_density),
             Some(dto::Density::Compact)
         );
+    }
+
+    #[test]
+    fn the_dialog_offers_follow_the_mac_then_each_language_by_its_own_name() {
+        let offered = language_choices();
+
+        let labels: Vec<&str> = offered.iter().map(|(_, label)| label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Follow the Mac", "English", "ไทย", "日本語", "简体中文"]
+        );
+        let choices: Vec<dto::LanguageChoice> = offered.iter().map(|(choice, _)| *choice).collect();
+        assert_eq!(
+            choices,
+            [
+                dto::LanguageChoice::FollowMac,
+                dto::LanguageChoice::Chosen(dto::Language::English),
+                dto::LanguageChoice::Chosen(dto::Language::Thai),
+                dto::LanguageChoice::Chosen(dto::Language::Japanese),
+                dto::LanguageChoice::Chosen(dto::Language::ChineseSimplified),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_language_keeps_its_own_name_whatever_language_the_dialog_is_in() {
+        for language in dto::Language::ALL {
+            let labels: Vec<String> = crate::i18n::with_language(language, || {
+                language_choices()
+                    .into_iter()
+                    .map(|(_, label)| label)
+                    .collect()
+            });
+
+            assert_eq!(
+                &labels[1..],
+                ["English", "ไทย", "日本語", "简体中文"],
+                "{language:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn choosing_a_language_changes_and_saves_it() {
+        let (mut handler, memory) = handler();
+
+        for choice in [
+            dto::LanguageChoice::Chosen(dto::Language::Thai),
+            dto::LanguageChoice::Chosen(dto::Language::ChineseSimplified),
+            dto::LanguageChoice::FollowMac,
+        ] {
+            request(&mut handler, Request::SetLanguage(choice));
+
+            assert_eq!(handler.current().language, choice);
+            assert_eq!(
+                memory
+                    .saved
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .map(|saved| saved.language),
+                Some(choice)
+            );
+        }
+        assert_eq!(memory.saved.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn choosing_the_language_already_chosen_saves_nothing() {
+        let (mut handler, memory) = handler();
+
+        request(
+            &mut handler,
+            Request::SetLanguage(dto::LanguageChoice::FollowMac),
+        );
+
+        assert!(memory.saved.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_language_switch_says_a_failed_save_again_in_the_new_language() {
+        let memory = Arc::new(Memory {
+            fail: true,
+            ..Memory::default()
+        });
+        let mut handler = Handler::new(memory);
+        let before = crate::i18n::with_language(dto::Language::English, || {
+            request(&mut handler, Request::SetStatusBar(true));
+            handler.save_error.clone().expect("the save failed").title
+        });
+
+        let after = crate::i18n::with_language(dto::Language::Thai, || {
+            handler.language_changed();
+            handler.save_error.clone().expect("still said").title
+        });
+
+        assert_ne!(after, before);
+    }
+
+    #[test]
+    fn a_language_switch_does_not_make_a_failed_save_more_than_one_recent_problem() {
+        let memory = Arc::new(Memory {
+            fail: true,
+            ..Memory::default()
+        });
+        let mut handler = Handler::new(memory);
+        crate::handler::error::clear_recent();
+        request(&mut handler, Request::SetStatusBar(true));
+
+        crate::i18n::with_language(dto::Language::Thai, || handler.language_changed());
+
+        let problems = crate::handler::error::recent_problems();
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].times, 1);
+    }
+
+    #[test]
+    fn the_dialog_draws_in_every_language() {
+        for language in dto::Language::ALL {
+            crate::i18n::with_language(language, || {
+                let (handler, _) = handler();
+                let _ = handler.view();
+            });
+        }
     }
 
     #[test]

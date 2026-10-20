@@ -32,6 +32,7 @@ use super::undo::{self, Undo};
 use super::window;
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::format::format_count;
+use crate::i18n::{t, tf};
 
 /// How wide the filter's kind menu is: room for "Documents".
 const KIND_WIDTH: f32 = 104.0;
@@ -43,7 +44,7 @@ struct KindChoice(Option<dto::FileKind>);
 impl std::fmt::Display for KindChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self.0 {
-            None => "All kinds",
+            None => t("explorer.filter.all_kinds"),
             kind => crate::handler::format::kind_label(kind),
         })
     }
@@ -440,7 +441,7 @@ pub struct Volume {
     /// The phone deletes for good, so it asks first; the Mac uses the Trash.
     pub deletes_permanently: bool,
     /// Label of the button that copies the selection to the other side.
-    pub transfer_action: Option<String>,
+    pub transfer_action: Option<&'static str>,
     /// Its files are on the Mac, so the menu offers "Show in Finder".
     pub shows_in_finder: bool,
     /// Items can be cut and pasted inside it.
@@ -1464,10 +1465,10 @@ impl Handler {
     }
 
     #[cfg(test)]
-    pub fn transfer_action(&self) -> Option<&str> {
+    pub fn transfer_action(&self) -> Option<&'static str> {
         self.location
             .as_ref()
-            .and_then(|location| location.volume.transfer_action.as_deref())
+            .and_then(|location| location.volume.transfer_action)
     }
 
     pub fn volume_id(&self) -> Option<u64> {
@@ -1476,7 +1477,7 @@ impl Handler {
 
     /// Shows or hides the button that copies to the other side, e.g. only
     /// while there is a phone to upload to.
-    pub fn set_transfer_action(&mut self, label: Option<String>) {
+    pub fn set_transfer_action(&mut self, label: Option<&'static str>) {
         if let Some(location) = &mut self.location {
             location.volume.transfer_action = label;
         }
@@ -1625,7 +1626,7 @@ impl Handler {
             on_entry,
             selected: self.selection.names().len(),
             single_folder,
-            transfer: location.volume.transfer_action.clone(),
+            transfer: location.volume.transfer_action,
             can_paste,
             on_mac: location.volume.shows_in_finder,
             deletes_permanently: location.volume.deletes_permanently,
@@ -1982,7 +1983,13 @@ impl Handler {
                 // A drop on a folder, or a paste that ended after the user went
                 // elsewhere: say where it went.
                 if !is_current && !response.select.is_empty() {
-                    notice.title = format!("{} to “{}”", notice.title, mapper::folder_name(&path));
+                    notice.title = tf(
+                        "explorer.paste.to_folder",
+                        &[
+                            ("title", &notice.title),
+                            ("folder", &mapper::folder_name(&path)),
+                        ],
+                    );
                 }
                 self.notice = Some(notice);
                 if response.select.is_empty() {
@@ -2129,7 +2136,7 @@ impl Handler {
             } => match result {
                 Ok((folder, select)) => {
                     self.notice = Some(NoticeResponse {
-                        title: format!("Undid the {what}"),
+                        title: t(what).to_owned(),
                         details: Vec::new(),
                         problem: false,
                     });
@@ -2460,7 +2467,7 @@ impl Handler {
                 Task::none()
             }
             Request::NewFolder => {
-                self.start(Change::NewFolder, mapper::NEW_FOLDER_NAME.to_owned());
+                self.start(Change::NewFolder, mapper::new_folder_name().to_owned());
                 Task::batch([
                     operation::focus(self.name_input.clone()),
                     operation::select_all(self.name_input.clone()),
@@ -2481,7 +2488,7 @@ impl Handler {
                 // then, and the banner says why.
                 if let Some(odd) = paths.iter().find(|path| mapper::has_control(path)) {
                     self.notice = Some(NoticeResponse {
-                        title: "Paths not copied".to_owned(),
+                        title: t("explorer.paths_not_copied").to_owned(),
                         details: vec![mapper::odd_name_hint(odd)],
                         problem: true,
                     });
@@ -2499,7 +2506,7 @@ impl Handler {
                     return Task::none();
                 }
                 let name = mapper::free_folder_name(
-                    mapper::FOLDER_WITH_ITEMS,
+                    mapper::folder_with_items(),
                     self.entries.iter().map(|entry| entry.name.as_str()),
                 );
                 let names = self.selection.names().to_vec();
@@ -2771,7 +2778,10 @@ impl Handler {
         };
         self.changed(volume_id, undo);
         let mut notice = response.notice;
-        notice.title = format!("{} into “{name}”", notice.title);
+        notice.title = tf(
+            "explorer.paste.into_folder",
+            &[("title", &notice.title), ("name", &name)],
+        );
         self.notice = Some(notice);
         self.name_the_group(&folder, &name)
     }
@@ -3241,6 +3251,17 @@ impl Handler {
 
     /// Undoes the pane's last change (once: there is no redo); the answer
     /// arrives as `Undone`.
+    pub fn language_changed(&mut self) {
+        self.notice = None;
+        self.error = self.error.as_ref().map(ErrorResponse::reworded);
+        if let Some(editor) = &mut self.editor {
+            editor.error = editor.error.as_ref().map(ErrorResponse::reworded);
+        }
+        if self.location.is_some() {
+            self.resort();
+        }
+    }
+
     pub fn undo(&mut self) -> Task<Message> {
         if !self.can_undo() {
             return Task::none();
@@ -3248,7 +3269,7 @@ impl Handler {
         let Some((volume_id, undo)) = self.last_undo.take() else {
             return Task::none();
         };
-        let what = undo.what();
+        let what = undo.banner();
         let service = Arc::clone(&self.service);
         Task::perform(
             async move {
@@ -3482,7 +3503,7 @@ impl Handler {
     /// What a folder's Size cell says now, if anything is known.
     fn size_text(&self, name: &str) -> Option<String> {
         match self.sizes.get(name)? {
-            FolderSize::Counting => Some(mapper::COUNTING.to_owned()),
+            FolderSize::Counting => Some(mapper::counting().to_owned()),
             FolderSize::Known(tally) => Some(mapper::folder_size(tally)),
         }
     }
@@ -3759,28 +3780,28 @@ impl Handler {
         let app_folder =
             location.volume.hides_app_folders && mapper::in_app_folders(&location.path);
         let body: Element<'_, Message> = if let Some(error) = &self.error {
-            failure(error, app_folder.then_some(mapper::APP_FOLDERS_NOTE))
+            failure(error, app_folder.then_some(mapper::app_folders_note()))
         } else if self.loading && self.rows.is_empty() {
             centered(text(loading_text(self.progress)).style(text::secondary))
         } else if self.rows.is_empty() && !self.entries.is_empty() {
             centered(
-                text(format!(
-                    "Nothing here has “{}” in its name",
-                    self.filter.trim()
+                text(tf(
+                    "explorer.empty.no_match",
+                    &[("filter", self.filter.trim())],
                 ))
                 .style(text::secondary),
             )
         } else if self.rows.is_empty() && app_folder {
             centered(
                 column![
-                    text("Nothing here can be seen from a Mac").size(18),
-                    text(mapper::APP_FOLDERS_NOTE).style(text::secondary),
+                    text(t("explorer.empty.app_folders")).size(18),
+                    text(mapper::app_folders_note()).style(text::secondary),
                 ]
                 .spacing(8)
                 .max_width(460),
             )
         } else if self.rows.is_empty() {
-            centered(text("This folder is empty").style(text::secondary))
+            centered(text(t("explorer.empty.folder")).style(text::secondary))
         } else if self.view == dto::ViewMode::Grid {
             responsive(move |size| self.tiles(grid::columns(size.width, self.tile), size.height))
                 .into()
@@ -3832,10 +3853,10 @@ impl Handler {
         let (title, details, problem, dismiss) = match (&self.pasting, &self.notice) {
             (Some(mode), _) => (
                 match (mode, on_the_mac) {
-                    (dto::Paste::Copy, false) => "Copying on the phone…",
-                    (dto::Paste::Move, false) => "Moving on the phone…",
-                    (dto::Paste::Copy, true) => "Copying…",
-                    (dto::Paste::Move, true) => "Moving…",
+                    (dto::Paste::Copy, false) => t("explorer.busy.copying_phone"),
+                    (dto::Paste::Move, false) => t("explorer.busy.moving_phone"),
+                    (dto::Paste::Copy, true) => t("explorer.busy.copying"),
+                    (dto::Paste::Move, true) => t("explorer.busy.moving"),
                 },
                 &[][..],
                 false,
@@ -3882,24 +3903,28 @@ impl Handler {
     fn toolbar<'a>(&'a self, location: &'a Location, width: u16) -> Element<'a, Message> {
         let back = icon_button(
             "‹",
-            "Back (⌘[)",
+            t("explorer.toolbar.back"),
             self.history
                 .can_go_back()
                 .then_some(Message::Request(Request::Back)),
         );
         let forward = icon_button(
             "›",
-            "Forward (⌘])",
+            t("explorer.toolbar.forward"),
             self.history
                 .can_go_forward()
                 .then_some(Message::Request(Request::Forward)),
         );
         let up = icon_button(
             "↑",
-            "Up one folder",
+            t("explorer.toolbar.up"),
             mapper::parent_path(&location.path).map(|_| Message::Request(Request::Up)),
         );
-        let refresh = icon_button("↻", "Refresh", Some(Message::Request(Request::Refresh)));
+        let refresh = icon_button(
+            "↻",
+            t("label.refresh"),
+            Some(Message::Request(Request::Refresh)),
+        );
 
         let crumbs = mapper::compact_breadcrumbs(mapper::breadcrumbs(
             &location.volume.name,
@@ -3926,7 +3951,7 @@ impl Handler {
         }
 
         let action = |label, request: Option<Request>| {
-            button(text(label).size(13))
+            button(text(label).size(13).wrapping(Wrapping::None))
                 .style(button::text)
                 .padding([4, 6])
                 .on_press_maybe(request.map(Message::Request))
@@ -3950,7 +3975,7 @@ impl Handler {
             view_button("▦", dto::ViewMode::Grid)
         ];
         // Always there, so nothing moves when it is used.
-        let filter = text_input("Filter", &self.filter)
+        let filter = text_input(t("explorer.filter.placeholder"), &self.filter)
             .id(self.filter_input.clone())
             .size(13)
             .padding([3, 8])
@@ -3982,19 +4007,34 @@ impl Handler {
         // row; a narrow one gives the filter a row of its own below, so
         // neither is squeezed to nothing.
         let inline = layout::filters_inline(width);
-        let filters = row![
-            container(filter)
-                .width(Length::FillPortion(if inline { 2 } else { 3 }))
-                .max_width(if inline { 140.0 } else { f32::INFINITY }),
-            container(date)
-                .width(Length::FillPortion(2))
-                .max_width(DATE_WIDTH),
-            container(kind)
-                .width(Length::FillPortion(2))
-                .max_width(KIND_WIDTH),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
+        let menus_beside = layout::menus_beside_filter(width);
+        let filters: Element<'_, Message> = if inline || menus_beside {
+            row![
+                container(filter)
+                    .width(Length::FillPortion(if inline { 2 } else { 3 }))
+                    .max_width(if inline { 140.0 } else { f32::INFINITY }),
+                container(date)
+                    .width(Length::FillPortion(2))
+                    .max_width(DATE_WIDTH),
+                container(kind)
+                    .width(Length::FillPortion(2))
+                    .max_width(KIND_WIDTH),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            column![
+                filter,
+                row![
+                    container(date).width(Length::Fill),
+                    container(kind).width(Length::Fill),
+                ]
+                .spacing(8),
+            ]
+            .spacing(4)
+            .into()
+        };
         let mut navigation = row![
             row![back, forward].spacing(2),
             up,
@@ -4015,22 +4055,22 @@ impl Handler {
         }
         let navigation = navigation.push(views);
         let mut actions = row![
-            action("New folder", Some(Request::NewFolder)),
-            action("Rename", has_selection.then_some(Request::Rename)),
-            action("Delete", has_selection.then_some(Request::Delete)),
+            action(t("explorer.action.new_folder"), Some(Request::NewFolder)),
+            action(t("label.rename"), has_selection.then_some(Request::Rename)),
+            action(t("label.delete"), has_selection.then_some(Request::Delete)),
         ]
         .spacing(4);
         if location.volume.phone_tools {
-            actions = actions.push(action("Search", Some(Request::Search)));
-            actions = actions.push(action("Mirror…", Some(Request::Mirror)));
+            actions = actions.push(action(t("label.search"), Some(Request::Search)));
+            actions = actions.push(action(t("explorer.action.mirror"), Some(Request::Mirror)));
         }
         // In a narrow pane the actions go on to a second line rather than
         // pushing the transfer button out of the pane.
         let mut actions = row![container(actions.wrap().vertical_spacing(2)).width(Length::Fill)]
             .align_y(Alignment::Start);
-        if let Some(label) = &location.volume.transfer_action {
+        if let Some(action) = location.volume.transfer_action {
             actions = actions.push(
-                button(text(label.as_str()).size(13).wrapping(Wrapping::None))
+                button(text(t(action)).size(13).wrapping(Wrapping::None))
                     .style(button::primary)
                     .padding([4, 10])
                     .on_press_maybe(has_selection.then_some(Message::Request(Request::Transfer))),
@@ -4050,16 +4090,22 @@ impl Handler {
         location: &'a Location,
     ) -> Element<'a, Message> {
         let (title, confirm) = match &editor.change {
-            Change::NewFolder => ("New folder".to_owned(), "Create"),
-            Change::Rename { original } => (format!("Rename “{original}”"), "Rename"),
-            Change::RenameMany(many) => (rename_many::title(many), "Rename All"),
-            Change::GoTo(_) => ("Go to Folder".to_owned(), "Go"),
+            Change::NewFolder => (
+                t("explorer.action.new_folder").to_owned(),
+                t("label.create"),
+            ),
+            Change::Rename { original } => (
+                tf("explorer.editor.rename_title", &[("original", original)]),
+                t("label.rename"),
+            ),
+            Change::RenameMany(many) => (rename_many::title(many), t("label.rename_all")),
+            Change::GoTo(_) => (t("explorer.editor.go_to_title").to_owned(), t("label.go")),
             Change::Delete { names, .. } => (
                 mapper::delete_title(names, location.volume.deletes_permanently),
                 if location.volume.deletes_permanently {
-                    "Delete"
+                    t("label.delete")
                 } else {
-                    "Move to Trash"
+                    t("label.move_to_trash")
                 },
             ),
         };
@@ -4067,7 +4113,7 @@ impl Handler {
         let mut content = column![text(title).size(18)].spacing(12);
         content = match &editor.change {
             Change::NewFolder | Change::Rename { .. } => content.push(
-                text_input("Name", &editor.name)
+                text_input(t("explorer.editor.name_placeholder"), &editor.name)
                     .id(self.name_input.clone())
                     .padding(8)
                     .on_input_maybe(
@@ -4116,12 +4162,16 @@ impl Handler {
         };
         let buttons = row![
             space::horizontal(),
-            button(text("Cancel"))
+            button(text(t("label.cancel")))
                 .style(button::secondary)
                 .on_press_maybe(can_cancel.then_some(Message::Request(Request::Cancel))),
-            button(text(if editor.busy { "Working…" } else { confirm }))
-                .style(confirm_style)
-                .on_press_maybe(can_confirm.then_some(Message::Request(Request::Submit))),
+            button(text(if editor.busy {
+                t("label.working")
+            } else {
+                confirm
+            }))
+            .style(confirm_style)
+            .on_press_maybe(can_confirm.then_some(Message::Request(Request::Submit))),
         ]
         .spacing(8);
 
@@ -4154,17 +4204,21 @@ impl Handler {
             .on_double_click(Message::Request(Request::ResetColumns))
         };
 
-        let mut header = row![sortable("Name", dto::SortKey::Name, Length::Fill)];
+        let mut header = row![sortable(
+            t("label.column.name"),
+            dto::SortKey::Name,
+            Length::Fill
+        )];
         if fit.kind {
             header = header.push(handle(layout::Edge::Kind)).push(sortable(
-                "Kind",
+                t("label.column.kind"),
                 dto::SortKey::Kind,
                 Length::Fixed(f32::from(fit.kind_width)),
             ));
         }
         if fit.size {
             header = header.push(handle(layout::Edge::Size)).push(sortable(
-                "Size",
+                t("label.column.size"),
                 dto::SortKey::Size,
                 Length::Fixed(f32::from(fit.size_width)),
             ));
@@ -4172,7 +4226,7 @@ impl Handler {
         header
             .push(handle(layout::Edge::Modified))
             .push(sortable(
-                "Modified",
+                t("label.column.modified"),
                 dto::SortKey::Modified,
                 Length::Fixed(f32::from(fit.modified_width)),
             ))
@@ -4200,11 +4254,11 @@ impl Handler {
         };
 
         let folders_first = toggler(self.sort.folders_first)
-            .label("Folders first")
+            .label(t("settings.folders_first"))
             .text_size(12)
             .on_toggle(|on| Message::Request(Request::SetFoldersFirst(on)));
         let hidden = toggler(self.show_hidden)
-            .label("Hidden")
+            .label(t("label.hidden"))
             .text_size(12)
             .on_toggle(|show| Message::Request(Request::SetShowHidden(show)));
 
@@ -4236,14 +4290,14 @@ impl Handler {
 /// "Loading…", or how far along a big folder is: "Loading 1,200 of 3,400…".
 fn loading_text(progress: Option<(usize, usize)>) -> String {
     match progress {
-        Some((loaded, total)) if total > 0 => {
-            format!(
-                "Loading {} of {}…",
-                format_count(loaded.min(total)),
-                format_count(total)
-            )
-        }
-        _ => "Loading…".to_owned(),
+        Some((loaded, total)) if total > 0 => tf(
+            "explorer.loading_of",
+            &[
+                ("loaded", &format_count(loaded.min(total))),
+                ("total", &format_count(total)),
+            ],
+        ),
+        _ => t("explorer.loading").to_owned(),
     }
 }
 
@@ -4291,7 +4345,7 @@ fn go_to_fields<'a>(go: &'a GoTo, typed: &'a str, input: Id) -> Element<'a, Mess
             .on_input(|typed| Message::Request(Request::EditName(typed)))
             .on_submit(Message::Request(Request::Submit)),
         names,
-        text(go_to::HINT).size(12).style(text::secondary),
+        text(t(go_to::HINT)).size(12).style(text::secondary),
     ]
     .spacing(8)
     .into()
@@ -5345,18 +5399,18 @@ fn menu_item(theme: &iced::Theme, status: button::Status) -> button::Style {
 /// phone is still said as one.
 fn failure<'a>(error: &'a ErrorResponse, why: Option<&'static str>) -> Element<'a, Message> {
     let (title, hint) = match why {
-        Some(why) if !error.device_lost => (mapper::APP_FOLDERS_REFUSED, why),
+        Some(why) if !error.device_lost => (mapper::app_folders_refused(), why),
         _ => (error.title.as_str(), error.hint.as_str()),
     };
-    let try_again = button(text("Try again")).on_press(Message::Request(Request::Refresh));
-    let go_to_top = button(text("Go to top"))
+    let try_again = button(text(t("label.try_again"))).on_press(Message::Request(Request::Refresh));
+    let go_to_top = button(text(t("label.go_to_top")))
         .style(button::secondary)
         .on_press(Message::Request(Request::GoTo("/".to_owned())));
     // macOS refused the folder: the way in is a switch in System Settings,
     // so that comes first.
     let buttons = match error.privacy {
         Some(pane) => row![
-            button(text("Open Privacy Settings…"))
+            button(text(t("label.open_privacy_settings")))
                 .style(button::primary)
                 .on_press(Message::Request(Request::OpenPrivacySettings(pane))),
             try_again.style(button::secondary),
@@ -5364,15 +5418,19 @@ fn failure<'a>(error: &'a ErrorResponse, why: Option<&'static str>) -> Element<'
         ],
         None => row![try_again.style(button::primary), go_to_top],
     };
-    centered(
-        column![
-            text(title).size(22),
-            text(hint).style(text::secondary),
-            buttons.spacing(8),
-        ]
+    let message = column![text(title).size(22), text(hint).style(text::secondary)]
         .spacing(12)
-        .max_width(460),
-    )
+        .padding([0, 12]);
+    let content = column![
+        container(scrollable(message)).center_y(Length::Fill),
+        container(buttons.spacing(8).wrap().vertical_spacing(8)).padding([0, 12]),
+    ]
+    .spacing(12)
+    .max_width(460);
+    container(content)
+        .center_x(Length::Fill)
+        .padding([12, 0])
+        .into()
 }
 
 fn centered<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
@@ -5395,7 +5453,7 @@ mod tests {
             name: "Internal".into(),
             home: None,
             deletes_permanently: true,
-            transfer_action: Some("Download to Mac".into()),
+            transfer_action: Some("label.download"),
             shows_in_finder: false,
             phone_tools: true,
             hides_app_folders: false,
@@ -6280,7 +6338,7 @@ mod tests {
         let mut handler = browsing("/");
         let _ = handler.update(Message::Undone {
             volume_id: 1,
-            what: "move",
+            what: "explorer.undo.moved",
             result: Err(error::to_error_response(dto::Error::ChangedSince(
                 "a.jpg".into(),
             ))),
@@ -6294,14 +6352,14 @@ mod tests {
 
         let elsewhere = handler.update(Message::Undone {
             volume_id: 1,
-            what: "move",
+            what: "explorer.undo.moved",
             result: Ok(("/Elsewhere".into(), vec!["a.jpg".into()])),
         });
         assert_eq!(elsewhere.units(), 0, "another folder: only the banner");
         assert_eq!(handler.notice.as_ref().unwrap().title, "Undid the move");
         let here = handler.update(Message::Undone {
             volume_id: 1,
-            what: "move",
+            what: "explorer.undo.moved",
             result: Ok(("/".into(), vec!["notes.txt".into()])),
         });
         assert!(
@@ -6714,19 +6772,13 @@ mod tests {
     #[test]
     fn the_transfer_button_can_come_and_go() {
         let mut handler = handler();
-        handler.set_transfer_action(Some("ignored while closed".into()));
+        handler.set_transfer_action(Some("label.download"));
         let _ = handler.open(mac(), "/Users/me".into());
 
-        handler.set_transfer_action(Some("Upload to phone".into()));
+        handler.set_transfer_action(Some("label.upload"));
         assert_eq!(
-            handler
-                .location
-                .as_ref()
-                .unwrap()
-                .volume
-                .transfer_action
-                .as_deref(),
-            Some("Upload to phone")
+            handler.location.as_ref().unwrap().volume.transfer_action,
+            Some("label.upload")
         );
         let _ = handler.view();
 
@@ -7448,8 +7500,8 @@ mod tests {
                 name: "x".into(),
                 moved: Vec::new()
             }
-            .what(),
-            "new folder"
+            .banner(),
+            "explorer.undo.new_folder"
         );
     }
 
@@ -9512,12 +9564,24 @@ mod tests {
         );
     }
 
-    /// How many of the `n` photos have a widget.
     fn rows_built(handler: &Handler, n: usize) -> Vec<usize> {
-        let mut ui = iced_test::simulator(handler.view());
-        (0..n)
-            .filter(|i| ui.find(format!("IMG_{i:05}.jpg")).is_ok())
-            .collect()
+        let built_in = |language| {
+            crate::i18n::with_language(language, || {
+                let mut ui = iced_test::simulator(handler.view());
+                (0..n)
+                    .filter(|i| ui.find(format!("IMG_{i:05}.jpg")).is_ok())
+                    .collect::<Vec<usize>>()
+            })
+        };
+        let in_english = built_in(dto::Language::English);
+        for language in dto::Language::ALL {
+            assert_eq!(
+                built_in(language),
+                in_english,
+                "{language:?} builds other rows than English"
+            );
+        }
+        in_english
     }
 
     fn filter(handler: &mut Handler, text: &str) {
@@ -9526,6 +9590,149 @@ mod tests {
 
     fn shown(handler: &Handler) -> Vec<String> {
         handler.rows.iter().map(|row| row.name.clone()).collect()
+    }
+
+    fn in_thai<Output>(work: impl FnOnce() -> Output) -> Output {
+        crate::i18n::with_language(dto::Language::Thai, work)
+    }
+
+    fn trip() -> Handler {
+        let mut handler = handler();
+        let _ = handler.open(storage(), "/DCIM".into());
+        let photo = dto::Entry {
+            modified: Some(dto::Timestamp {
+                year: 2020,
+                month: 1,
+                day: 5,
+                hour: 9,
+                minute: 5,
+            }),
+            ..sized("写真.jpg", 1_500)
+        };
+        let _ = handler.update(listed(
+            "/DCIM",
+            &[folder("รูปทริป"), photo, file("notes.txt")],
+        ));
+        handler
+    }
+
+    #[test]
+    fn a_language_switch_rewords_the_rows_and_keeps_the_place() {
+        let mut handler = trip();
+        let _ = handler.update(Message::Request(Request::Select("写真.jpg".into())));
+        let row = |handler: &Handler, name: &str| {
+            let at = handler
+                .rows
+                .iter()
+                .position(|row| row.name == name)
+                .unwrap();
+            (
+                handler.rows[at].kind.clone(),
+                handler.rows[at].modified.clone(),
+            )
+        };
+        assert_eq!(
+            row(&handler, "写真.jpg"),
+            ("JPG file".into(), "5 Jan 2020".into())
+        );
+
+        in_thai(|| {
+            handler.language_changed();
+
+            let kind = tf("explorer.kind.extension", &[("extension", "JPG")]);
+            let modified = tf(
+                "date.other_year",
+                &[("day", "5"), ("month", t("month.1")), ("year", "2020")],
+            );
+            assert_eq!(row(&handler, "写真.jpg"), (kind, modified));
+            assert_eq!(row(&handler, "รูปทริป").0, t("explorer.kind.folder"));
+        });
+        assert_ne!(row(&handler, "写真.jpg").0, "JPG file");
+        assert_eq!(shown(&handler), ["รูปทริป", "notes.txt", "写真.jpg"]);
+        assert_eq!(handler.location(), Some((1, "/DCIM")));
+        assert_eq!(handler.selection().unwrap().names, ["写真.jpg"]);
+    }
+
+    #[test]
+    fn a_language_switch_keeps_the_filter_and_the_sort() {
+        let mut handler = trip();
+        filter(&mut handler, "jpg");
+        let _ = handler.update(Message::Request(Request::SortBy(dto::SortKey::Size)));
+        let sort = handler.sort;
+
+        in_thai(|| handler.language_changed());
+
+        assert_eq!(handler.filter, "jpg");
+        assert_eq!(handler.sort, sort);
+        assert_eq!(shown(&handler), ["写真.jpg"]);
+        assert_eq!(
+            handler.rows[0].kind,
+            in_thai(|| tf("explorer.kind.extension", &[("extension", "JPG")]))
+        );
+    }
+
+    #[test]
+    fn a_language_switch_clears_the_banner_and_rewords_the_error() {
+        let mut handler = trip();
+        handler.notice = Some(NoticeResponse {
+            title: "Copied “a.jpg”".into(),
+            details: Vec::new(),
+            problem: false,
+        });
+        let _ = handler.update(Message::Listed {
+            volume_id: 1,
+            path: "/DCIM".into(),
+            result: Err(error::to_error_response(dto::Error::PathNotFound(
+                "/DCIM".into(),
+            ))),
+        });
+        assert_eq!(handler.error.as_ref().unwrap().title, "This folder is gone");
+
+        in_thai(|| handler.language_changed());
+
+        assert!(handler.notice.is_none());
+        let said = in_thai(|| t("error.path_not_found.title"));
+        assert_ne!(said, "This folder is gone");
+        assert_eq!(handler.error.as_ref().unwrap().title, said);
+        in_thai(|| {
+            let mut ui = iced_test::simulator(handler.view());
+            assert!(ui.find(said).is_ok());
+        });
+    }
+
+    #[test]
+    fn a_language_switch_rewords_the_group_headers() {
+        let mut handler = trip();
+        handler.set_group_by(dto::GroupBy::Kind);
+        let labels = |handler: &Handler| -> Vec<String> {
+            handler
+                .groups
+                .iter()
+                .map(|group| group.label.clone())
+                .collect()
+        };
+        assert_eq!(labels(&handler), ["Folders", "Photos", "Documents"]);
+
+        in_thai(|| handler.language_changed());
+
+        assert_eq!(
+            labels(&handler),
+            in_thai(|| [
+                t("explorer.group.folders"),
+                t("label.kind.photos"),
+                t("label.kind.documents"),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_language_switch_with_nothing_open_changes_nothing() {
+        let mut handler = handler();
+
+        in_thai(|| handler.language_changed());
+
+        assert!(handler.location().is_none());
+        assert!(handler.rows.is_empty());
     }
 
     /// Five names: two beach photos, a beach video, a note and a folder.
@@ -9688,7 +9895,7 @@ mod tests {
         ] {
             let handler = empty_at(android_storage(), path);
             let mut ui = iced_test::simulator(handler.view());
-            assert!(ui.find(mapper::APP_FOLDERS_NOTE).is_ok(), "{path}");
+            assert!(ui.find(mapper::app_folders_note()).is_ok(), "{path}");
             assert!(ui.find("Nothing here can be seen from a Mac").is_ok());
             assert!(ui.find("This folder is empty").is_err(), "{path}");
         }
@@ -9703,7 +9910,7 @@ mod tests {
             let handler = empty_at(volume, path);
             let mut ui = iced_test::simulator(handler.view());
             assert!(ui.find("This folder is empty").is_ok(), "{path}");
-            assert!(ui.find(mapper::APP_FOLDERS_NOTE).is_err(), "{path}");
+            assert!(ui.find(mapper::app_folders_note()).is_err(), "{path}");
         }
     }
 
@@ -9724,8 +9931,8 @@ mod tests {
 
         let inside = refused("/Android/data/com.example.app");
         let mut ui = iced_test::simulator(inside.view());
-        assert!(ui.find(mapper::APP_FOLDERS_REFUSED).is_ok());
-        assert!(ui.find(mapper::APP_FOLDERS_NOTE).is_ok());
+        assert!(ui.find(mapper::app_folders_refused()).is_ok());
+        assert!(ui.find(mapper::app_folders_note()).is_ok());
         let usual = crate::handler::error::to_error_response(dto::Error::PermissionDenied);
         assert!(
             ui.find(usual.hint.as_str()).is_err(),
@@ -9744,11 +9951,11 @@ mod tests {
         });
         let mut ui = iced_test::simulator(lost.view());
         assert!(ui.find(gone.title.as_str()).is_ok());
-        assert!(ui.find(mapper::APP_FOLDERS_NOTE).is_err());
+        assert!(ui.find(mapper::app_folders_note()).is_err());
 
         let elsewhere = refused("/DCIM");
         let mut ui = iced_test::simulator(elsewhere.view());
-        assert!(ui.find(mapper::APP_FOLDERS_NOTE).is_err());
+        assert!(ui.find(mapper::app_folders_note()).is_err());
     }
 
     /// The phone pane at / with notes.txt (12 B), Trip (a folder of 40 B)
@@ -11024,17 +11231,21 @@ mod tests {
             folder_of(10, dto::ViewMode::List, 0.0).view(),
         ));
 
-        for view in [dto::ViewMode::List, dto::ViewMode::Grid] {
-            let small = build_seconds(&folder_of(1_000, view, 0.0));
-            let large = build_seconds(&folder_of(20_000, view, 0.0));
+        for language in dto::Language::ALL {
+            crate::i18n::with_language(language, || {
+                for view in [dto::ViewMode::List, dto::ViewMode::Grid] {
+                    let small = build_seconds(&folder_of(1_000, view, 0.0));
+                    let large = build_seconds(&folder_of(20_000, view, 0.0));
 
-            // 20 times the files must not cost anything like 20 times as much
-            // (it did, before only the rows near the screen were built). The
-            // floor keeps a very fast small build from making the ratio silly.
-            assert!(
-                large < small.max(0.020) * 5.0,
-                "{view:?}: 1,000 files took {small:.3}s, 20,000 took {large:.3}s"
-            );
+                    // 20 times the files must not cost anything like 20 times as much
+                    // (it did, before only the rows near the screen were built). The
+                    // floor keeps a very fast small build from making the ratio silly.
+                    assert!(
+                        large < small.max(0.020) * 5.0,
+                        "{language:?} {view:?}: 1,000 files took {small:.3}s, 20,000 took {large:.3}s"
+                    );
+                }
+            });
         }
     }
 

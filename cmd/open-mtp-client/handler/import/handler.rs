@@ -13,6 +13,7 @@ use internal::dto;
 use super::mapper;
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::i18n::{t, tf};
 
 /// Told how many photos and videos the walk has found so far.
 pub type Seen = Box<dyn Fn(usize) + Send + Sync>;
@@ -115,6 +116,14 @@ impl Handler {
             cancel: dto::Cancel::new(),
         });
         self.look()
+    }
+
+    pub fn language_changed(&mut self) {
+        if let Some(dialog) = self.dialog.as_mut()
+            && let Preview::Failed(Problem::Failed(error)) = &mut dialog.preview
+        {
+            *error = error.reworded();
+        }
     }
 
     /// Closes the dialog, stopping a preview under way.
@@ -251,50 +260,34 @@ impl Handler {
             .text_size(14)
         };
         let mut by_date = column![
-            choice("Straight into the folder", dto::ImportFolders::None),
-            choice(
-                "A folder for each day (2026-10-17)",
-                dto::ImportFolders::Day
-            ),
-            choice(
-                "A folder for each month (2026-10)",
-                dto::ImportFolders::Month
-            ),
-            choice(
-                "A folder for each year, a folder for each month in it (2026/10)",
-                dto::ImportFolders::YearMonth
-            ),
+            choice(t("import.choice_none"), dto::ImportFolders::None),
+            choice(t("import.choice_day"), dto::ImportFolders::Day),
+            choice(t("import.choice_month"), dto::ImportFolders::Month),
+            choice(t("import.choice_year_month"), dto::ImportFolders::YearMonth),
         ]
         .spacing(6);
         if dialog.folders != dto::ImportFolders::None {
-            by_date = by_date.push(
-                text("Files without a date go straight into the folder.")
-                    .size(12)
-                    .style(text::secondary),
-            );
+            by_date = by_date.push(text(t("import.undated")).size(12).style(text::secondary));
         }
         let content = column![
-            text("Import new photos and videos").size(20),
-            text(format!(
-                "From DCIM on {}: what the camera took, without the phone's hidden thumbnails and trash.",
-                dialog.storage
-            ))
-            .size(13)
-            .style(text::secondary),
+            text(t("import.title")).size(20),
+            text(tf("import.from", &[("storage", &dialog.storage)]))
+                .size(13)
+                .style(text::secondary),
             rule::horizontal(1),
             row![
-                text("Into").size(13).style(text::secondary),
+                text(t("import.into")).size(13).style(text::secondary),
                 text(&dialog.shown_destination).size(14),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            text("To import somewhere else, open that folder on the Mac side first.")
+            text(t("import.somewhere_else"))
                 .size(12)
                 .style(text::secondary),
             by_date,
             column![
                 checkbox(dialog.remove)
-                    .label("Remove them from the phone once imported")
+                    .label(t("import.remove_after"))
                     .text_size(14)
                     .on_toggle(move |on| send(Request::RemoveAfter(on))),
                 text(mapper::removing_note(dialog.remove))
@@ -304,15 +297,13 @@ impl Handler {
             .spacing(4),
             rule::horizontal(1),
             status,
-            text("What was imported from this phone before is left out, even if it has since been moved or deleted on the Mac.")
-                .size(12)
-                .style(text::secondary),
+            text(t("import.left_out")).size(12).style(text::secondary),
             row![
                 space::horizontal(),
-                button(text("Cancel"))
+                button(text(t("label.cancel")))
                     .style(button::secondary)
                     .on_press(send(Request::Close)),
-                button(text("Import"))
+                button(text(t("label.import")))
                     .style(button::primary)
                     .on_press_maybe(self.request().map(|_| send(Request::Import))),
             ]
@@ -369,6 +360,43 @@ mod tests {
 
     fn shows(handler: &Handler, words: &str) -> bool {
         iced_test::simulator(handler.view()).find(words).is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_change_of_language_words_the_open_dialog_and_a_failed_look_again() {
+        use internal::dto::Language;
+
+        let (mut handler, _) = opened(FakeImport::answering(Ok(preview(312, 4_898))), false).await;
+        assert!(shows(&handler, "Import new photos and videos"));
+
+        crate::i18n::set_language(Language::Thai);
+        handler.language_changed();
+
+        for key in [
+            "import.title",
+            "import.into",
+            "import.remove_after",
+            "label.cancel",
+            "label.import",
+        ] {
+            assert!(shows(&handler, crate::i18n::t(key)), "{key}");
+        }
+        assert!(!shows(&handler, "Import new photos and videos"));
+        assert_eq!(
+            handler.request().map(|r| r.storage_id),
+            Some(5),
+            "the choice stays"
+        );
+
+        let (mut failed, _) = opened(FakeImport::answering(Err(dto::Error::Timeout)), false).await;
+        let english = error::to_error_response(dto::Error::Timeout).title;
+        crate::i18n::set_language(Language::English);
+        assert!(shows(&failed, &english));
+        crate::i18n::set_language(Language::Japanese);
+        failed.language_changed();
+        let said = error::to_error_response(dto::Error::Timeout).title;
+        assert_ne!(said, english);
+        assert!(shows(&failed, &said));
     }
 
     #[tokio::test]

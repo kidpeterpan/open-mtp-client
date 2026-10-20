@@ -3,6 +3,7 @@ use internal::dto;
 
 use super::response::ResultRow;
 use crate::handler::format::{format_bytes, format_count, format_timestamp};
+use crate::i18n::{count, t, tf};
 
 /// A result's full path, which tells it from a file of the same name in
 /// another folder.
@@ -40,7 +41,7 @@ pub fn to_row(found: &dto::Found, today: NaiveDate) -> ResultRow {
 pub fn place_of(folder: &str) -> String {
     let parts: Vec<&str> = folder.split('/').filter(|part| !part.is_empty()).collect();
     if parts.is_empty() {
-        "Top folder".to_owned()
+        t("search.top_folder").to_owned()
     } else {
         parts.join(" › ")
     }
@@ -59,39 +60,44 @@ pub struct Progress {
 
 pub fn status(progress: Progress, asked: bool, found: usize, storage: &str) -> String {
     let found_text = match found {
-        0 => "nothing found yet".to_owned(),
-        1 => "1 found".to_owned(),
-        n => format!("{} found", format_count(n)),
+        0 => t("search.found_none_yet").to_owned(),
+        n => count("search.found", n, &[]),
     };
     if !progress.done {
-        let seen = format!(
-            "Looking through {storage}: {} folders, {} items so far",
-            format_count(progress.folders_read),
-            format_count(progress.items)
+        let seen = tf(
+            "search.looking",
+            &[
+                ("storage", storage),
+                ("folders", &format_count(progress.folders_read)),
+                ("items", &format_count(progress.items)),
+            ],
         );
         return if asked {
-            format!("{seen} · {found_text}")
+            tf("text.dot", &[("first", &seen), ("second", &found_text)])
         } else {
             seen
         };
     }
-    let mut line = if !asked {
-        format!(
-            "{} items on {storage}: type part of a name, or choose a kind",
-            format_count(progress.items)
+    let line = if !asked {
+        tf(
+            "search.idle",
+            &[
+                ("items", &format_count(progress.items)),
+                ("storage", storage),
+            ],
         )
     } else {
         match found {
-            0 => format!("Nothing found on {storage}"),
-            1 => format!("1 found on {storage}"),
-            n => format!("{} found on {storage}", format_count(n)),
+            0 => tf("search.none", &[("storage", storage)]),
+            n => count("search.found_on", n, &[("storage", storage)]),
         }
     };
     if progress.truncated {
-        line.push_str(&format!(
-            " · stopped after {} items, so there may be more",
-            format_count(progress.items)
-        ));
+        let truncated = tf(
+            "search.truncated",
+            &[("items", &format_count(progress.items))],
+        );
+        return tf("text.dot", &[("first", &line), ("second", &truncated)]);
     }
     line
 }
@@ -99,8 +105,8 @@ pub fn status(progress: Progress, asked: bool, found: usize, storage: &str) -> S
 /// "Download to Mac", "Download 3 to Mac".
 pub fn download_label(selected: usize) -> String {
     match selected {
-        0 | 1 => "Download to Mac".to_owned(),
-        n => format!("Download {} to Mac", format_count(n)),
+        0 | 1 => t("search.download_one").to_owned(),
+        n => count("search.download_many", n, &[]),
     }
 }
 

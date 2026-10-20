@@ -1,4 +1,24 @@
 /// Failures a user can act on.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Disk {
+    #[default]
+    MacDisk,
+    Volume(String),
+    PhoneStorage(String),
+    Folder(String),
+}
+
+impl std::fmt::Display for Disk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Disk::MacDisk => write!(f, "on your Mac's disk"),
+            Disk::Volume(name) => write!(f, "on “{name}”"),
+            Disk::PhoneStorage(name) => write!(f, "on the phone's “{name}”"),
+            Disk::Folder(path) => write!(f, "in “{path}”"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     #[error("no MTP device found")]
@@ -56,21 +76,17 @@ pub enum Error {
     #[error("the Mac's disk is full")]
     MacDiskFull,
     /// A transfer would not fit where it is going: refused before it starts.
-    #[error("needs {needed} bytes; {free} are free {place}")]
-    NotEnoughRoom {
-        needed: u64,
-        free: u64,
-        place: String,
-    },
+    #[error("needs {needed} bytes; {free} are free {disk}")]
+    NotEnoughRoom { needed: u64, free: u64, disk: Disk },
     /// The Mac volume a transfer would write to can't be written (an NTFS
     /// drive, a locked SD card, a read-only disk image); where, as
     /// `NotEnoughRoom` names it.
     #[error("nothing can be written {0}")]
-    VolumeReadOnly(String),
+    VolumeReadOnly(Disk),
     /// A file too big for the file system it would go to (4 GB or more on
     /// FAT32); where, as `NotEnoughRoom` names it.
     #[error("too big for the disk {0}")]
-    TooBigForVolume(String),
+    TooBigForVolume(Disk),
     /// An undo found the item no longer as the change left it (gone, moved
     /// again, or a new folder that has something in it now).
     #[error("{0} has changed since")]

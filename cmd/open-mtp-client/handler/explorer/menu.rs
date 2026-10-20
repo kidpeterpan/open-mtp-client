@@ -6,6 +6,8 @@
 
 use iced::{Point, Rectangle, Size};
 
+use crate::i18n::{t, tf};
+
 pub const WIDTH: f32 = 240.0;
 pub const ITEM_HEIGHT: f32 = 26.0;
 pub const SEPARATOR_HEIGHT: f32 = 9.0;
@@ -92,7 +94,7 @@ pub struct Context {
     /// The selection is one folder (which can be pinned).
     pub single_folder: bool,
     /// Label of the copy to the other side ("Download"), if there is one.
-    pub transfer: Option<String>,
+    pub transfer: Option<&'static str>,
     /// The clipboard holds items from the other side.
     pub can_paste: bool,
     /// The pane is on the Mac, so items can be shown in Finder.
@@ -117,85 +119,122 @@ fn item(label: impl Into<String>, shortcut: &'static str, action: Action, enable
 
 /// The menu's sections, separated by a line.
 pub fn sections(context: &Context) -> Vec<Vec<Item>> {
-    let paste = item("Paste", "⌘V", Action::Paste, context.can_paste);
+    let paste = item(t("menu.item.paste"), "⌘V", Action::Paste, context.can_paste);
     if !context.on_entry {
         return vec![
-            vec![item("New Folder", "⌘N", Action::NewFolder, true), paste],
             vec![
-                item("Select All", "⌘A", Action::SelectAll, true),
+                item(t("menu.item.new_folder"), "⌘N", Action::NewFolder, true),
+                paste,
+            ],
+            vec![
+                item(t("menu.item.select_all"), "⌘A", Action::SelectAll, true),
                 item(
-                    "Select Not in Other Pane",
+                    t("menu.item.select_not_in_other"),
                     "",
                     Action::SelectNotInOther,
                     context.other_pane,
                 ),
                 item(
-                    "Select Also in Other Pane",
+                    t("menu.item.select_also_in_other"),
                     "",
                     Action::SelectAlsoInOther,
                     context.other_pane,
                 ),
-                item("Refresh", "⌘R", Action::Refresh, true),
+                item(t("label.refresh"), "⌘R", Action::Refresh, true),
             ],
             vec![
-                item("Get Info", "⌘I", Action::GetInfoHere, true),
-                item("Add This Folder to Sidebar", "", Action::PinHere, true),
+                item(t("menu.item.get_info"), "⌘I", Action::GetInfoHere, true),
+                item(
+                    t("menu.item.add_folder_to_sidebar"),
+                    "",
+                    Action::PinHere,
+                    true,
+                ),
             ],
         ];
     }
 
     // A folder opens in the pane, a file in its Mac app.
-    let mut first = vec![item("Open", "↵", Action::Open, context.selected == 1)];
+    let mut first = vec![item(
+        t("menu.item.open"),
+        "↵",
+        Action::Open,
+        context.selected == 1,
+    )];
     if let Some(enabled) = context.edit_on_mac {
-        first.push(item("Edit on Mac", "", Action::EditOnMac, enabled));
+        first.push(item(
+            t("menu.item.edit_on_mac"),
+            "",
+            Action::EditOnMac,
+            enabled,
+        ));
     }
-    if let Some(label) = &context.transfer {
-        let what = match context.selected {
-            1 => String::new(),
-            n => format!(" {n} Items"),
+    if let Some(action) = context.transfer {
+        let label = t(action);
+        let title = match context.selected {
+            1 => label.to_owned(),
+            n => tf(
+                "menu.item.transfer_many",
+                &[("label", label), ("count", &n.to_string())],
+            ),
         };
-        first.push(item(format!("{label}{what}"), "", Action::Transfer, true));
+        first.push(item(title, "", Action::Transfer, true));
         // Where there is a side to copy to, there is one to check against.
         first.push(item(
-            "Check Against Other Pane",
+            t("menu.item.check_against_other"),
             "",
             Action::CheckAgainstOther,
             context.other_pane,
         ));
     }
-    first.push(item("Get Info", "⌘I", Action::GetInfo, true));
-    first.push(item("Share…", "", Action::Share, true));
+    first.push(item(t("menu.item.get_info"), "⌘I", Action::GetInfo, true));
+    first.push(item(t("menu.item.share"), "", Action::Share, true));
     first.push(item(
-        "Add to Sidebar",
+        t("menu.item.add_to_sidebar"),
         "",
         Action::Pin,
         context.single_folder,
     ));
 
     let delete = if context.deletes_permanently {
-        "Delete…"
+        t("menu.item.delete")
     } else {
-        "Move to Trash"
+        t("label.move_to_trash")
     };
     let mut edit = vec![
         item(
-            "New Folder with Selection",
+            t("menu.item.new_folder_with_selection"),
             "⌃⌘N",
             Action::NewFolderWithItems,
             context.selected >= 1,
         ),
-        item("Rename…", "⌘D", Action::Rename, context.selected >= 1),
+        item(
+            t("menu.item.rename"),
+            "⌘D",
+            Action::Rename,
+            context.selected >= 1,
+        ),
         item(delete, "⌘⌫", Action::Delete, true),
     ];
     if context.on_mac {
-        edit.push(item("Show in Finder", "", Action::ShowInFinder, true));
+        edit.push(item(
+            t("menu.item.show_in_finder"),
+            "",
+            Action::ShowInFinder,
+            true,
+        ));
     }
 
     let clipboard = vec![
-        item("Cut", "⌘X", Action::Cut, true),
-        item("Copy", "⌘C", Action::Copy, true),
-        item("Copy to Queue", "⇧⌘C", Action::CopyToQueue, true),
-        item("Copy Path", "⌥⌘C", Action::CopyPath, true),
+        item(t("menu.item.cut"), "⌘X", Action::Cut, true),
+        item(t("menu.item.copy"), "⌘C", Action::Copy, true),
+        item(
+            t("menu.item.copy_to_queue"),
+            "⇧⌘C",
+            Action::CopyToQueue,
+            true,
+        ),
+        item(t("menu.item.copy_path"), "⌥⌘C", Action::CopyPath, true),
         paste,
     ];
 
@@ -252,7 +291,7 @@ mod tests {
             on_entry: true,
             selected: 1,
             single_folder: false,
-            transfer: Some("Upload".into()),
+            transfer: Some("label.upload"),
             can_paste: false,
             on_mac: true,
             deletes_permanently: false,
@@ -290,7 +329,7 @@ mod tests {
         let alone = sections(&Context {
             on_entry: true,
             selected: 2,
-            transfer: Some("Download".into()),
+            transfer: Some("label.download"),
             ..Context::default()
         });
         let check = find(&alone, Action::CheckAgainstOther);
@@ -299,7 +338,7 @@ mod tests {
         let both = sections(&Context {
             on_entry: true,
             selected: 2,
-            transfer: Some("Download".into()),
+            transfer: Some("label.download"),
             other_pane: true,
             ..Context::default()
         });
@@ -417,7 +456,7 @@ mod tests {
         let sections = sections(&Context {
             on_mac: false,
             deletes_permanently: true,
-            transfer: Some("Download".into()),
+            transfer: Some("label.download"),
             ..on_a_mac_file()
         });
 

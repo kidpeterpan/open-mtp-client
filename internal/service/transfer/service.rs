@@ -793,10 +793,10 @@ impl Service {
                 state.bytes_total = state.bytes_total.saturating_sub(step.bytes_to_copy());
                 state.files_done += 1;
                 not_copied += 1;
-                let place = mac_room.as_ref().map(|room| room.place.clone());
+                let disk = mac_room.as_ref().map(|room| room.disk.clone());
                 failures.push(FileFailure {
                     label: label.clone(),
-                    error: Error::TooBigForVolume(place.unwrap_or_default()),
+                    error: Error::TooBigForVolume(disk.unwrap_or_default()),
                 });
                 continue;
             }

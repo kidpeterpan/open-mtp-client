@@ -181,6 +181,101 @@ fn main() {
     assert_eq!(submenu_items("Nowhere"), None);
     SystemMenuBar.fill("Nowhere", &[]);
 
+    let in_another_language = vec![
+        Menu {
+            title: "App".into(),
+            role: MenuRole::App,
+            entries: vec![MenuEntry::Services, MenuEntry::Separator],
+        },
+        Menu {
+            title: "Fichier".into(),
+            role: MenuRole::Other,
+            entries: vec![
+                MenuEntry::Command {
+                    title: "Nouveau dossier".into(),
+                    keys: cmd("n"),
+                    tag: 1,
+                },
+                MenuEntry::Command {
+                    title: "Coller".into(),
+                    keys: cmd("v"),
+                    tag: 2,
+                },
+                MenuEntry::Submenu {
+                    title: "Dossiers récents".into(),
+                    entries: vec![MenuEntry::Command {
+                        title: "Vider le menu".into(),
+                        keys: None,
+                        tag: 4,
+                    }],
+                },
+            ],
+        },
+        Menu {
+            title: "Fenêtre".into(),
+            role: MenuRole::Window,
+            entries: vec![MenuEntry::System {
+                title: "Placer dans le Dock".into(),
+                keys: cmd("m"),
+                action: SystemAction::Minimize,
+            }],
+        },
+        Menu {
+            title: "Aide".into(),
+            role: MenuRole::Help,
+            entries: vec![MenuEntry::System {
+                title: "Agrandir".into(),
+                keys: None,
+                action: SystemAction::Zoom,
+            }],
+        },
+    ];
+    let clicked_again = Arc::new(Mutex::new(Vec::new()));
+    let seen_again = Arc::clone(&clicked_again);
+    SystemMenuBar.install(
+        &in_another_language,
+        Box::new(move |tag| seen_again.lock().unwrap().push(tag)),
+    );
+    assert_eq!(
+        submenu_items("Recent Folders"),
+        None,
+        "the old title is gone after installing again"
+    );
+    assert_eq!(
+        submenu_items("Dossiers récents"),
+        Some(vec!["Vider le menu".to_owned()]),
+        "the new titles are read back"
+    );
+    assert_eq!(
+        menu_item_state(1, 1),
+        Some((true, false)),
+        "Coller is as built: the state is told again after installing again"
+    );
+    assert_eq!(
+        menu_press("m", true, false, false, false),
+        Some(0),
+        "the Window menu is still macOS's: ⌘M stays with the menu"
+    );
+    assert!(
+        menu_item_state(2, 0).is_some(),
+        "the Window menu holds its item"
+    );
+    assert!(
+        menu_item_state(3, 0).is_some(),
+        "the Help menu holds its item"
+    );
+    menu_choose(1, 0).expect("Fichier > Nouveau dossier exists");
+    assert_eq!(
+        *clicked_again.lock().unwrap(),
+        [1],
+        "a click reaches the new callback"
+    );
+    assert_eq!(
+        *clicked.lock().unwrap(),
+        [1, 10_000],
+        "and not the one from before"
+    );
+
     assert!(
         !SystemSharer.share(&[std::env::temp_dir()], Some((10.0, 10.0))),
         "on the main thread but with no window: the share menu says it can't show"

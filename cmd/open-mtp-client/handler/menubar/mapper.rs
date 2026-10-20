@@ -8,13 +8,16 @@ use internal::dto;
 use super::handler::{Command, State};
 use crate::handler::explorer::{Against, Request};
 use crate::handler::help::Tab;
+use crate::i18n::t;
 use crate::keymap::{self, MacPlace, Shortcut};
 
 /// What the app is called in the menus.
 pub const APP_NAME: &str = "open-mtp-client";
 
 /// The submenu in Go listing the folders shown lately.
-pub const RECENT_TITLE: &str = "Recent Folders";
+pub fn recent_title() -> &'static str {
+    t("menubar.recent")
+}
 
 /// The tag of the first recent folder; the next ones follow. Far above the
 /// menus' own commands, whose tags count from 0.
@@ -63,135 +66,164 @@ fn layout() -> Vec<(&'static str, dto::MenuRole, Vec<Line>)> {
             APP_NAME,
             App,
             vec![
-                command("About open-mtp-client", Command::Help(Tab::About)),
+                command(t("menubar.about"), Command::Help(Tab::About)),
                 Line::Separator,
-                command("Settings…", key(Shortcut::Settings)),
+                command(t("menubar.settings"), key(Shortcut::Settings)),
                 Line::Separator,
                 Line::Services,
                 Line::Separator,
-                Line::System("Hide open-mtp-client", system_keys("h", false, false), Hide),
-                Line::System("Hide Others", system_keys("h", true, false), HideOthers),
-                Line::System("Show All", None, ShowAll),
+                Line::System(t("menubar.hide"), system_keys("h", false, false), Hide),
+                Line::System(
+                    t("menubar.hide_others"),
+                    system_keys("h", true, false),
+                    HideOthers,
+                ),
+                Line::System(t("menubar.show_all"), None, ShowAll),
                 Line::Separator,
                 // Ours, not AppKit's terminate: a running transfer is asked
                 // about and stopped where it can carry on.
-                command("Quit open-mtp-client", key(Shortcut::Quit)),
+                command(t("menubar.quit"), key(Shortcut::Quit)),
             ],
         ),
         (
-            "File",
+            t("menubar.file"),
             Other,
             vec![
-                command("New Folder", pane(Request::NewFolder)),
+                command(t("menu.item.new_folder"), pane(Request::NewFolder)),
                 command(
-                    "New Folder with Selection",
+                    t("menu.item.new_folder_with_selection"),
                     pane(Request::NewFolderWithItems),
                 ),
                 Line::Separator,
-                command("Open", pane(Request::OpenSelected)),
-                command("Quick Look", key(Shortcut::QuickLook)),
-                command("Get Info", key(Shortcut::GetInfo)),
-                command("Share…", Command::Share),
-                command("Edit on Mac", Command::EditOnMac),
+                command(t("menu.item.open"), pane(Request::OpenSelected)),
+                command(t("menubar.quick_look"), key(Shortcut::QuickLook)),
+                command(t("menu.item.get_info"), key(Shortcut::GetInfo)),
+                command(t("menu.item.share"), Command::Share),
+                command(t("menu.item.edit_on_mac"), Command::EditOnMac),
                 Line::Separator,
-                command("Rename…", pane(Request::Rename)),
-                command("Delete…", pane(Request::Delete)),
+                command(t("menu.item.rename"), pane(Request::Rename)),
+                command(t("menu.item.delete"), pane(Request::Delete)),
                 Line::Separator,
-                command("Import New Photos…", Command::ImportPhotos),
-                command("Mirror…", Command::Mirror),
+                command(t("menubar.import"), Command::ImportPhotos),
+                command(t("explorer.action.mirror"), Command::Mirror),
             ],
         ),
         (
-            "Edit",
+            t("menubar.edit"),
             Other,
             vec![
-                command("Undo", key(Shortcut::Undo)),
+                command(t("menubar.undo"), key(Shortcut::Undo)),
                 Line::Separator,
-                command("Cut", key(Shortcut::Cut)),
-                command("Copy", key(Shortcut::Copy)),
-                command("Add to Copied", key(Shortcut::CopyToQueue)),
-                command("Copy Path", pane(Request::CopyPath)),
-                command("Paste", key(Shortcut::Paste)),
+                command(t("menu.item.cut"), key(Shortcut::Cut)),
+                command(t("menu.item.copy"), key(Shortcut::Copy)),
+                command(t("menubar.add_to_copied"), key(Shortcut::CopyToQueue)),
+                command(t("menu.item.copy_path"), pane(Request::CopyPath)),
+                command(t("menu.item.paste"), key(Shortcut::Paste)),
                 Line::Separator,
-                command("Select All", pane(Request::SelectAll)),
+                command(t("menu.item.select_all"), pane(Request::SelectAll)),
                 command(
-                    "Select Not in Other Pane",
+                    t("menu.item.select_not_in_other"),
                     Command::SelectAgainst(Against::Missing),
                 ),
                 command(
-                    "Select Also in Other Pane",
+                    t("menu.item.select_also_in_other"),
                     Command::SelectAgainst(Against::Same),
                 ),
-                command("Check Contents Against Other Pane", Command::CheckContents),
+                command(t("menubar.check_contents"), Command::CheckContents),
                 Line::Separator,
-                command("Filter This Folder", pane(Request::FocusFilter)),
-                command("Search the Phone…", key(Shortcut::Search)),
+                command(t("menubar.filter"), pane(Request::FocusFilter)),
+                command(t("menubar.search_phone"), key(Shortcut::Search)),
             ],
         ),
         (
-            "View",
+            t("menubar.view"),
             Other,
             vec![
-                command("as List", Command::ViewAs(dto::ViewMode::List)),
-                command("as Grid", Command::ViewAs(dto::ViewMode::Grid)),
-                command("Make Tiles Bigger", key(Shortcut::TilesBigger)),
-                command("Make Tiles Smaller", key(Shortcut::TilesSmaller)),
+                command(t("menubar.as_list"), Command::ViewAs(dto::ViewMode::List)),
+                command(t("menubar.as_grid"), Command::ViewAs(dto::ViewMode::Grid)),
+                command(t("menubar.tiles_bigger"), key(Shortcut::TilesBigger)),
+                command(t("menubar.tiles_smaller"), key(Shortcut::TilesSmaller)),
                 Line::Separator,
-                command("Show Hidden Files", key(Shortcut::ToggleHidden)),
-                command("Calculate Folder Sizes", Command::ToggleFolderSizes),
+                command(t("menubar.show_hidden"), key(Shortcut::ToggleHidden)),
+                command(t("menubar.folder_sizes"), Command::ToggleFolderSizes),
                 Line::Separator,
-                command("Use Groups", key(Shortcut::UseGroups)),
-                command("Group by Date", Command::GroupBy(dto::GroupBy::Date)),
-                command("Group by Kind", Command::GroupBy(dto::GroupBy::Kind)),
-                command("Group by Size", Command::GroupBy(dto::GroupBy::Size)),
+                command(t("menubar.use_groups"), key(Shortcut::UseGroups)),
+                command(
+                    t("menubar.group_date"),
+                    Command::GroupBy(dto::GroupBy::Date),
+                ),
+                command(
+                    t("menubar.group_kind"),
+                    Command::GroupBy(dto::GroupBy::Kind),
+                ),
+                command(
+                    t("menubar.group_size"),
+                    Command::GroupBy(dto::GroupBy::Size),
+                ),
                 Line::Separator,
-                command("Reload", pane(Request::Refresh)),
+                command(t("menubar.reload"), pane(Request::Refresh)),
                 Line::Separator,
                 Line::System(
-                    "Enter Full Screen",
+                    t("menubar.full_screen"),
                     system_keys("f", false, true),
                     FullScreen,
                 ),
             ],
         ),
         (
-            "Go",
+            t("menubar.go"),
             Other,
             vec![
-                command("Back", pane(Request::Back)),
-                command("Forward", pane(Request::Forward)),
-                command("Enclosing Folder", pane(Request::Up)),
-                command("Go to Folder…", pane(Request::GoToFolder)),
+                command(t("menubar.back"), pane(Request::Back)),
+                command(t("menubar.forward"), pane(Request::Forward)),
+                command(t("menubar.enclosing"), pane(Request::Up)),
+                command(t("menubar.go_to_folder"), pane(Request::GoToFolder)),
                 Line::Separator,
-                command("Home", key(Shortcut::GoToMac(MacPlace::Home))),
-                command("Desktop", key(Shortcut::GoToMac(MacPlace::Desktop))),
-                command("Downloads", key(Shortcut::GoToMac(MacPlace::Downloads))),
+                command(t("places.home"), key(Shortcut::GoToMac(MacPlace::Home))),
+                command(
+                    t("places.desktop"),
+                    key(Shortcut::GoToMac(MacPlace::Desktop)),
+                ),
+                command(
+                    t("places.downloads"),
+                    key(Shortcut::GoToMac(MacPlace::Downloads)),
+                ),
                 Line::Separator,
-                command("Switch Pane", key(Shortcut::SwitchPane)),
+                command(t("menubar.switch_pane"), key(Shortcut::SwitchPane)),
                 Line::Separator,
                 Line::Recent,
             ],
         ),
         (
-            "Window",
+            t("menubar.window"),
             Window,
             vec![
-                Line::System("Minimize", system_keys("m", false, false), Minimize),
-                Line::System("Zoom", None, Zoom),
+                Line::System(
+                    t("menubar.minimize"),
+                    system_keys("m", false, false),
+                    Minimize,
+                ),
+                Line::System(t("menubar.zoom"), None, Zoom),
                 Line::Separator,
-                Line::System("Bring All to Front", None, BringAllToFront),
+                Line::System(t("menubar.bring_all"), None, BringAllToFront),
             ],
         ),
         (
-            "Help",
+            t("menubar.help"),
             Help,
             vec![
-                command("open-mtp-client Help", key(Shortcut::Help)),
-                command("Keyboard Shortcuts", Command::Help(Tab::Shortcuts)),
-                command("Troubleshooting", Command::Help(Tab::Troubleshooting)),
-                command("What's New", Command::Help(Tab::WhatsNew)),
+                command(t("menubar.help_app"), key(Shortcut::Help)),
+                command(
+                    t("menubar.keyboard_shortcuts"),
+                    Command::Help(Tab::Shortcuts),
+                ),
+                command(
+                    t("help.tab.troubleshooting"),
+                    Command::Help(Tab::Troubleshooting),
+                ),
+                command(t("menubar.whats_new"), Command::Help(Tab::WhatsNew)),
                 Line::Separator,
-                command("Report a Problem…", Command::ReportProblem),
+                command(t("menubar.report_problem"), Command::ReportProblem),
             ],
         ),
     ]
@@ -239,7 +271,7 @@ pub fn menus() -> (Vec<dto::Menu>, Vec<Command>) {
                     Line::Recent => {
                         commands.push(Command::ClearRecent);
                         dto::MenuEntry::Submenu {
-                            title: RECENT_TITLE.to_owned(),
+                            title: recent_title().to_owned(),
                             entries: recent_entries(&commands, &[]),
                         }
                     }
@@ -258,7 +290,7 @@ pub fn recent_entries(commands: &[Command], recent: &[String]) -> Vec<dto::MenuE
         .iter()
         .position(|command| *command == Command::ClearRecent)
         .map(|tag| dto::MenuEntry::Command {
-            title: "Clear Menu".to_owned(),
+            title: t("menubar.clear_menu").to_owned(),
             keys: None,
             tag: tag as u32,
         });
@@ -279,7 +311,7 @@ pub fn with_recent(menus: &[dto::Menu], commands: &[Command], recent: &[String])
     let mut menus = menus.to_vec();
     for entry in menus.iter_mut().flat_map(|menu| menu.entries.iter_mut()) {
         if let dto::MenuEntry::Submenu { title, entries } = entry
-            && title == RECENT_TITLE
+            && title == recent_title()
         {
             *entries = recent_entries(commands, recent);
         }

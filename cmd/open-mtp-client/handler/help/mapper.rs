@@ -3,6 +3,7 @@ use internal::dto;
 use super::request::Link;
 use super::response::{ShortcutGroup, ShortcutLine};
 use crate::handler::error::Problem;
+use crate::i18n::{english_only, t};
 use crate::keymap::Row;
 
 /// The Shortcuts tab: the keymap's lines, grouped in the order the groups first
@@ -12,7 +13,11 @@ pub fn to_shortcut_groups(rows: &[Row]) -> Vec<ShortcutGroup> {
     for row in rows {
         let line = ShortcutLine {
             label: row.label.to_owned(),
-            keys: row.keys.split(" or ").map(str::to_owned).collect(),
+            keys: row
+                .keys
+                .split(english_only(" or "))
+                .map(str::to_owned)
+                .collect(),
         };
         match groups.iter_mut().find(|group| group.title == row.group) {
             Some(group) => group.lines.push(line),
@@ -28,30 +33,21 @@ pub fn to_shortcut_groups(rows: &[Row]) -> Vec<ShortcutGroup> {
 /// Things to do with the mouse, which have no key to list.
 pub fn mouse_tips() -> [(&'static str, &'static str); 9] {
     [
-        ("Right-click", "a menu of what you can do with the file"),
-        ("Double-click", "open a folder"),
-        ("⌘-click", "add or remove one item from the selection"),
-        ("⇧-click", "select everything from the last click to here"),
+        (t("mouse.right_click"), t("mouse.right_click_does")),
+        (t("mouse.double_click"), t("mouse.double_click_does")),
+        (t("mouse.command_click"), t("mouse.command_click_does")),
+        (t("mouse.shift_click"), t("mouse.shift_click_does")),
+        (t("mouse.drag_beside"), t("mouse.drag_beside_does")),
         (
-            "Drag beside the names",
-            "draw a box to select; ⌘ turns items over, ⇧ adds",
+            t("mouse.drag_onto_folder"),
+            t("mouse.drag_onto_folder_does"),
         ),
+        (t("mouse.drag_to_pane"), t("mouse.drag_to_pane_does")),
         (
-            "Drag onto a folder",
-            "move the selection into it; hold ⌥ to copy",
+            t("mouse.drag_from_finder"),
+            t("mouse.drag_from_finder_does"),
         ),
-        (
-            "Drag to the other pane",
-            "copy there, or into a folder in it; hold ⌘ to move",
-        ),
-        (
-            "Drag from Finder",
-            "drop files on the phone's pane to upload them",
-        ),
-        (
-            "Column heads",
-            "click Name, Size or Modified to sort; again to reverse",
-        ),
+        (t("mouse.column_heads"), t("mouse.column_heads_does")),
     ]
 }
 
@@ -89,34 +85,34 @@ pub fn report_text(
     diagnosis: &dto::Diagnosis,
     problems: &[Problem],
 ) -> String {
-    let mut phone_lines = format!("Phone: {}\n", phone.summary);
+    let mut phone_lines = english_only(format!("Phone: {}\n", phone.summary));
     if let Some(abilities) = &phone.abilities {
-        phone_lines.push_str(&format!(
+        phone_lines.push_str(&english_only(format!(
             "Phone operations: {}\n",
             crate::handler::format::operations_line(abilities)
-        ));
+        )));
     }
     if let Some(link) = phone.link {
-        phone_lines.push_str(&format!(
+        phone_lines.push_str(&english_only(format!(
             "USB link: {}, {} Mb/s\n",
             crate::handler::format::link_label(link),
             link.megabits()
-        ));
+        )));
     }
     if let Some(reading) = &phone.reading {
-        phone_lines.push_str(&format!(
+        phone_lines.push_str(&english_only(format!(
             "Reading a folder: {}\n",
-            crate::handler::format::format_reading(reading)
-        ));
+            crate::handler::format::format_reading_in_english(reading)
+        )));
     }
     let os = if mac.os_version.is_empty() {
-        "macOS (version unknown)".to_owned()
+        english_only("macOS (version unknown)".to_owned())
     } else {
-        format!("macOS {}", mac.os_version)
+        english_only(format!("macOS {}", mac.os_version))
     };
     let usb = match diagnosis.phones.as_deref() {
-        None => "not checked".to_owned(),
-        Some([]) => "no phone seen".to_owned(),
+        None => english_only("not checked".to_owned()),
+        Some([]) => english_only("no phone seen".to_owned()),
         Some(phones) => phones.join(", "),
     };
     let apps = if diagnosis.owner_seen {
@@ -131,52 +127,52 @@ pub fn report_text(
                 diagnosis
                     .unknown_owners
                     .iter()
-                    .map(|process| format!("“{process}” (not known to the app)")),
+                    .map(|process| english_only(format!("“{process}” (not known to the app)"))),
             )
             .collect();
-        format!(
+        english_only(format!(
             "Holding the phone, as macOS records it: {}",
             names.join(", ")
-        )
+        ))
     } else {
         let apps = match diagnosis.holders.as_deref() {
-            None => "not checked".to_owned(),
-            Some([]) => "none running".to_owned(),
+            None => english_only("not checked".to_owned()),
+            Some([]) => english_only("none running".to_owned()),
             Some(holders) => holders
                 .iter()
                 .map(|holder| holder.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
         };
-        format!("Apps that can hold a phone: {apps}")
+        english_only(format!("Apps that can hold a phone: {apps}"))
     };
     // Titles only (fixed text, never a path or a name), with when and how
     // often in a row.
     let recent = if problems.is_empty() {
-        "Recent problems: none this session\n".to_owned()
+        english_only("Recent problems: none this session\n".to_owned())
     } else {
-        let mut lines = "Recent problems (this session, newest first):\n".to_owned();
+        let mut lines = english_only("Recent problems (this session, newest first):\n".to_owned());
         for problem in problems {
             let times = match problem.times {
                 1 => String::new(),
-                n => format!(" (×{n})"),
+                n => english_only(format!(" (×{n})")),
             };
-            lines.push_str(&format!(
+            lines.push_str(&english_only(format!(
                 "  {}  {}{times}\n",
                 problem.at.format("%H:%M"),
                 problem.title
-            ));
+            )));
         }
         lines
     };
     let crashes = crash_lines(&mac.crashes);
-    format!(
+    english_only(format!(
         "open-mtp-client {version}\n{os} ({arch}{rosetta})\n{phone_lines}Seen on USB: {usb}\n{apps}\n{recent}{crashes}",
         arch = mac.arch,
         // The universal app runs as x86_64 on Apple Silicon only when someone
         // asked for Rosetta: slower than it needs to be, worth knowing.
         rosetta = if mac.translated { " under Rosetta" } else { "" },
-    )
+    ))
 }
 
 /// Reports of the app's own failures: when and where in the code, as the
@@ -188,30 +184,33 @@ fn crash_lines(crashes: &[dto::CrashNote]) -> String {
     /// The newest few; the rest are only counted.
     const SHOWN: usize = 5;
     if crashes.is_empty() {
-        return "Crashes: none kept\n".to_owned();
+        return english_only("Crashes: none kept\n".to_owned());
     }
-    let mut lines = "Crashes kept (newest first):\n".to_owned();
+    let mut lines = english_only("Crashes kept (newest first):\n".to_owned());
     for note in crashes.iter().take(SHOWN) {
         let at = i64::try_from(note.at_ms)
             .ok()
             .and_then(DateTime::from_timestamp_millis)
             .map_or_else(
-                || "unknown time".to_owned(),
+                || english_only("unknown time".to_owned()),
                 |at| {
                     at.with_timezone(&Local)
-                        .format("%Y-%m-%d %H:%M")
+                        .format(english_only("%Y-%m-%d %H:%M"))
                         .to_string()
                 },
             );
         let place = if note.location.is_empty() {
-            "unknown place"
+            english_only("unknown place")
         } else {
             note.location.as_str()
         };
-        lines.push_str(&format!("  {at}  {place}\n"));
+        lines.push_str(&english_only(format!("  {at}  {place}\n")));
     }
     if crashes.len() > SHOWN {
-        lines.push_str(&format!("  and {} more\n", crashes.len() - SHOWN));
+        lines.push_str(&english_only(format!(
+            "  and {} more\n",
+            crashes.len() - SHOWN
+        )));
     }
     lines
 }
@@ -220,10 +219,10 @@ fn crash_lines(crashes: &[dto::CrashNote]) -> String {
 /// into the usual folder of commands (in every Mac's path). The path is
 /// quoted for the shell, so a space or a quote in it can't break the line.
 pub fn cli_link_line(path: &str) -> String {
-    format!(
+    english_only(format!(
         "ln -sf {} /usr/local/bin/open-mtp-client-cli",
         shell_quote(path)
-    )
+    ))
 }
 
 /// `text` in single quotes, a single quote in it closed, escaped and

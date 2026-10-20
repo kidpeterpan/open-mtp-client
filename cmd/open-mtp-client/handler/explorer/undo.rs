@@ -13,6 +13,7 @@ use internal::dto;
 
 use super::handler::Service;
 use super::mapper;
+use crate::i18n::key;
 
 /// A change that can be undone, in the folder (or folders) it happened in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,12 +52,11 @@ pub struct MovedStep {
 }
 
 impl Undo {
-    /// What the change was, for the banner: "Undid the rename".
-    pub fn what(&self) -> &'static str {
+    pub fn banner(&self) -> &'static str {
         match self {
-            Undo::Renamed { .. } | Undo::RenamedMany { .. } => "rename",
-            Undo::MadeFolder { .. } | Undo::Grouped { .. } => "new folder",
-            Undo::Moved(_) => "move",
+            Undo::Renamed { .. } | Undo::RenamedMany { .. } => key("explorer.undo.renamed"),
+            Undo::MadeFolder { .. } | Undo::Grouped { .. } => key("explorer.undo.new_folder"),
+            Undo::Moved(_) => key("explorer.undo.moved"),
         }
     }
 }
@@ -258,7 +258,7 @@ mod tests {
                 ],
             }]))
         );
-        assert_eq!(moved.unwrap().what(), "move");
+        assert_eq!(moved.unwrap().banner(), "explorer.undo.moved");
     }
 
     #[test]

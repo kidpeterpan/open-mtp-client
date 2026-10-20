@@ -29,6 +29,7 @@ use super::response::ResultRow;
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::explorer::selection::{Click, Selection};
 use crate::handler::explorer::window;
+use crate::i18n::{count, t};
 
 /// Rows have a fixed height, so only the ones near the screen are built.
 pub(super) const ROW_HEIGHT: f32 = 32.0;
@@ -468,21 +469,25 @@ impl Handler {
         self.chosen.len()
     }
 
+    pub fn language_changed(&mut self) {
+        self.error = self.error.as_ref().map(ErrorResponse::reworded);
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let Some(scope) = &self.scope else {
             return space().into();
         };
-        let field = text_input("Search the phone by name", &self.query)
+        let field = text_input(t("search.placeholder"), &self.query)
             .id(self.input.clone())
             .on_input(|query| Message::Request(Request::Query(query)))
             .padding([6, 10])
             .size(15);
         let top = row![
             field,
-            button(text("Look again").size(13))
+            button(text(t("search.look_again")).size(13))
                 .style(button::text)
                 .on_press(Message::Request(Request::Refresh)),
-            button(text("Close").size(13))
+            button(text(t("label.close")).size(13))
                 .style(button::text)
                 .on_press(Message::Request(Request::Close)),
         ]
@@ -537,10 +542,14 @@ impl Handler {
                 .on_press(Message::Request(Request::SortBy(key)))
         };
         let header = row![
-            sortable("Name", dto::SortKey::Name, NAME_COLUMN),
-            heading("Where", PLACE_COLUMN),
-            sortable("Size", dto::SortKey::Size, SIZE_COLUMN),
-            sortable("Modified", dto::SortKey::Modified, MODIFIED_COLUMN),
+            sortable(t("label.column.name"), dto::SortKey::Name, NAME_COLUMN),
+            heading(t("search.where"), PLACE_COLUMN),
+            sortable(t("label.column.size"), dto::SortKey::Size, SIZE_COLUMN),
+            sortable(
+                t("label.column.modified"),
+                dto::SortKey::Modified,
+                MODIFIED_COLUMN
+            ),
         ]
         .spacing(8)
         .padding([0, 10]);
@@ -549,13 +558,12 @@ impl Handler {
         let footer = row![
             text(match selected {
                 0 => String::new(),
-                1 => "1 selected".to_owned(),
-                n => format!("{} selected", crate::handler::format::format_count(n)),
+                n => count("search.selected", n, &[]),
             })
             .size(12)
             .style(text::secondary)
             .width(Length::Fill),
-            button(text("Show in folder").size(13))
+            button(text(t("search.show_in_folder")).size(13))
                 .style(button::secondary)
                 .on_press_maybe((selected == 1).then_some(Message::Request(Request::ShowInFolder))),
             button(text(mapper::download_label(selected)).size(13))
@@ -926,6 +934,49 @@ mod tests {
             .is_none()
         );
         assert!(Message::Request(Request::Close).device_lost().is_none());
+    }
+
+    fn in_thai<Output>(work: impl FnOnce() -> Output) -> Output {
+        crate::i18n::with_language(dto::Language::Thai, work)
+    }
+
+    #[test]
+    fn a_language_switch_words_the_results_and_the_failure_again() {
+        let (mut handler, _) = open(FakeSearch::default());
+        walked(&mut handler, piece(a_phone(), true));
+        let seen = |handler: &Handler, wanted: &str| {
+            let mut ui = iced_test::simulator(handler.view());
+            ui.find(wanted.to_owned()).is_ok()
+        };
+        let status = |handler: &Handler| {
+            mapper::status(handler.progress, false, handler.matches.len(), "Internal")
+        };
+        assert!(seen(&handler, &status(&handler)));
+        in_thai(|| {
+            assert!(
+                seen(&handler, &status(&handler)),
+                "the line is worded as shown"
+            );
+            assert_eq!(mapper::place_of("/"), t("search.top_folder"));
+            assert_ne!(mapper::place_of("/"), "Top folder");
+        });
+        assert_eq!(mapper::place_of("/"), "Top folder");
+        let walk = handler.walk;
+        let _ = handler.update(Message::Walked {
+            walk,
+            result: Err(error::to_error_response(dto::Error::Disconnected)),
+        });
+        assert_eq!(
+            handler.error.as_ref().unwrap().title,
+            "Your phone was disconnected"
+        );
+
+        in_thai(|| handler.language_changed());
+
+        let said = in_thai(|| error::describe_again(&dto::Error::Disconnected).title);
+        assert_ne!(said, "Your phone was disconnected");
+        assert_eq!(handler.error.as_ref().unwrap().title, said);
+        assert!(handler.progress.done);
     }
 
     #[test]

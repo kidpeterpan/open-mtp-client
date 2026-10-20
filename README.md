@@ -121,12 +121,35 @@ Still stuck? Open **Help > Troubleshooting**. It checks your Mac and tells you w
 | Dock progress and notifications | ✅ |
 | Light and dark theme | ✅ |
 | Command line tool for scripts | ✅ |
+| More languages (Thai first): Thai, Japanese, Simplified Chinese | ✅ |
 | **Next** | |
 | Video thumbnails | 🚧 |
 | Signed downloads and Homebrew | 🚧 |
 | Show the phone in Finder | 🚧 |
 | Copy phone to phone | 🚧 |
-| More languages (Thai first) | 🚧 |
+
+## Languages
+
+open-mtp-client speaks English, Thai, Japanese and Simplified Chinese. Choose one in Settings › Language, or leave it on "Follow the Mac".
+
+Every word the window shows is in four text files in `cmd/open-mtp-client/i18n/locales/`: `en.txt`, `th.txt`, `ja.txt` and `zh-Hans.txt`. English is the source: a message exists only if `en.txt` has it. This README, the command line tool and the report in Help › About stay in English.
+
+**To correct a word**, edit its line in that language's file and nothing else.
+
+```text
+# a note, ignored
+transfer.done.title = Copied {count} files
+```
+
+- One message is one line: `key = value`. Keep the key as it is and change only the value.
+- `{name}` and `{count}` mark where a name or a number goes. Keep every `{…}` exactly as in English, and write the whole sentence around it. Names from the phone or the Mac are put in by the app, never translated.
+- Use short, everyday words, and the same word for the same thing (each file starts with a few `#` lines listing the words it uses).
+- Thai: put a space between phrases. The window wraps Thai only at spaces, so a long run of letters with none runs off the edge (at most 24 Thai letters in a row).
+- Only `en.txt` has `.one` lines (the form for exactly 1); Thai, Japanese and Chinese write one line for any number.
+
+Then run `make test`. It checks that all four files have the same messages and the same `{…}` slots, that Thai has its spaces, and that no English words are left in another language. To see the result, run `make run-virtual` and pick the language in Settings.
+
+**To add a language**, copy `en.txt` to a new file in the same folder and translate it. A new language also needs a few lines of Rust (the list in `internal/dto/language.rs` and the files embedded in `cmd/open-mtp-client/i18n/mod.rs`): open an issue saying which language, and we will help with that part.
 
 ## Command line
 

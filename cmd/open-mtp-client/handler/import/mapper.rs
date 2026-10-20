@@ -1,41 +1,40 @@
 use internal::dto;
 
 use crate::handler::format::{format_bytes, format_count};
+use crate::i18n::{count, t, tf};
 
 /// "1 photo or video", "312 photos and videos".
-fn photos(count: usize) -> String {
-    match count {
-        1 => "1 photo or video".to_owned(),
-        n => format!("{} photos and videos", format_count(n)),
-    }
+fn photos(number: usize) -> String {
+    count("import.photos", number, &[])
 }
 
 /// What the dialog says while it looks.
 pub fn looking(seen: usize) -> String {
     match seen {
-        0 => "Looking through DCIM…".to_owned(),
-        n => format!("Looking through DCIM… {} so far", photos(n)),
+        0 => t("import.looking").to_owned(),
+        n => tf("import.looking_so_far", &[("photos", &photos(n))]),
     }
 }
 
 /// What the dialog says about what is new.
 pub fn preview_line(preview: &dto::ImportPreview) -> String {
     match (preview.new_files, preview.already) {
-        (0, 0) => "There are no photos or videos in DCIM.".to_owned(),
-        (0, already) => format!(
-            "Nothing new: all {} are on this Mac already.",
-            photos(already)
+        (0, 0) => t("import.none_in_dcim").to_owned(),
+        (0, already) => tf("import.nothing_new", &[("photos", &photos(already))]),
+        (new, 0) => tf(
+            "import.to_import",
+            &[
+                ("photos", &photos(new)),
+                ("size", &format_bytes(preview.new_bytes)),
+            ],
         ),
-        (new, 0) => format!(
-            "{} to import ({})",
-            photos(new),
-            format_bytes(preview.new_bytes)
-        ),
-        (new, already) => format!(
-            "{} to import ({}) · {} already on this Mac",
-            photos(new),
-            format_bytes(preview.new_bytes),
-            format_count(already)
+        (new, already) => tf(
+            "import.to_import_already",
+            &[
+                ("photos", &photos(new)),
+                ("size", &format_bytes(preview.new_bytes)),
+                ("already", &format_count(already)),
+            ],
         ),
     }
 }
@@ -43,7 +42,7 @@ pub fn preview_line(preview: &dto::ImportPreview) -> String {
 /// What the dialog says about a storage without a DCIM folder: not an error
 /// so much as nothing from a camera to import.
 pub fn no_dcim(storage: &str) -> String {
-    format!("{storage} has no DCIM folder, so there is nothing from the camera to import.")
+    tf("import.no_dcim", &[("storage", storage)])
 }
 
 /// The destination as the user knows it: their home as "~".
@@ -58,9 +57,9 @@ pub fn destination_line(destination: &str, home: &str) -> String {
 /// What the dialog says under "Remove them from the phone".
 pub fn removing_note(remove: bool) -> &'static str {
     if remove {
-        "Only photos and videos whose copies are checked on the Mac are removed, one by one; folders stay."
+        t("import.remove_note_on")
     } else {
-        "Everything stays on the phone."
+        t("import.remove_note_off")
     }
 }
 

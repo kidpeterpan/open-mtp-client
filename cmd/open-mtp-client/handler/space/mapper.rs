@@ -4,6 +4,7 @@ use chrono::NaiveDate;
 use internal::dto;
 
 use crate::handler::format::{format_bytes, format_count, format_timestamp};
+use crate::i18n::{count, t, tf};
 
 /// One line of the dialog's list, all the same height.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,14 +27,16 @@ pub enum Line {
 
 pub fn looking(progress: Option<dto::SpaceProgress>) -> String {
     match progress {
-        None => "Looking through the phone…".to_owned(),
+        None => t("space.looking").to_owned(),
         Some(dto::SpaceProgress::Walking { files }) => {
-            format!("Looking through the phone: {} files", format_count(files))
+            tf("space.walking", &[("files", &files_word(files))])
         }
-        Some(dto::SpaceProgress::Comparing { done, total }) => format!(
-            "Reading files of the same size to be sure they are copies: {} of {}",
-            format_bytes(done),
-            format_bytes(total)
+        Some(dto::SpaceProgress::Comparing { done, total }) => tf(
+            "space.comparing",
+            &[
+                ("done", &format_bytes(done)),
+                ("total", &format_bytes(total)),
+            ],
         ),
     }
 }
@@ -43,25 +46,26 @@ pub fn found(report: &dto::SpaceReport) -> String {
     let copies: usize = report.duplicates.iter().map(|g| g.files.len() - 1).sum();
     let imported: u64 = report.imported.iter().map(|file| file.size).sum();
     match (copies, report.imported.len()) {
-        (0, 0) => format!(
-            "Nothing to free among {} files: no copies of the same file, and no photos already on this Mac.",
-            format_count(report.files)
+        (0, 0) => tf(
+            "space.nothing_to_free",
+            &[("files", &files_word(report.files))],
         ),
         (copies, photos) => {
             let mut parts = Vec::new();
             if copies > 0 {
-                parts.push(format!(
-                    "{} {} could go ({})",
-                    format_count(copies),
-                    if copies == 1 { "copy" } else { "copies" },
-                    format_bytes(report.duplicate_bytes())
+                parts.push(count(
+                    "space.copies_could_go",
+                    copies,
+                    &[("size", &format_bytes(report.duplicate_bytes()))],
                 ));
             }
             if photos > 0 {
-                parts.push(format!(
-                    "{} already on this Mac ({})",
-                    files_word(photos),
-                    format_bytes(imported)
+                parts.push(tf(
+                    "space.imported_already",
+                    &[
+                        ("files", &files_word(photos)),
+                        ("size", &format_bytes(imported)),
+                    ],
                 ));
             }
             parts.join(" · ")
@@ -72,12 +76,12 @@ pub fn found(report: &dto::SpaceReport) -> String {
 /// The list: copies by group, the one to keep first, then the photos
 /// already imported. Built once per look.
 pub fn lines(report: &dto::SpaceReport, today: NaiveDate) -> Vec<Line> {
-    let mut lines = vec![Line::Heading(format!(
-        "Copies of the same file, read in full to be sure ({})",
-        format_bytes(report.duplicate_bytes())
+    let mut lines = vec![Line::Heading(tf(
+        "space.heading_copies",
+        &[("size", &format_bytes(report.duplicate_bytes()))],
     ))];
     if report.duplicates.is_empty() {
-        lines.push(Line::Empty("No two files are the same.".to_owned()));
+        lines.push(Line::Empty(t("space.no_two_same").to_owned()));
     }
     for group in &report.duplicates {
         let name = group.files[0]
@@ -86,25 +90,22 @@ pub fn lines(report: &dto::SpaceReport, today: NaiveDate) -> Vec<Line> {
             .next()
             .unwrap_or_default()
             .to_owned();
-        lines.push(Line::Group(format!(
-            "{name} · {} copies of {}",
+        lines.push(Line::Group(count(
+            "space.group",
             group.files.len(),
-            format_bytes(group.size)
+            &[("name", &name), ("size", &format_bytes(group.size))],
         )));
         for (index, file) in group.files.iter().enumerate() {
             lines.push(file_line(file, index == 0, today));
         }
     }
     let imported: u64 = report.imported.iter().map(|file| file.size).sum();
-    lines.push(Line::Heading(format!(
-        "Already imported and still on this Mac where the import put them ({})",
-        format_bytes(imported)
+    lines.push(Line::Heading(tf(
+        "space.heading_imported",
+        &[("size", &format_bytes(imported))],
     )));
     if report.imported.is_empty() {
-        lines.push(Line::Empty(
-            "None: only photos imported from now on, whose copy is still in place, count."
-                .to_owned(),
-        ));
+        lines.push(Line::Empty(t("space.none_imported").to_owned()));
     }
     for file in &report.imported {
         lines.push(file_line(file, false, today));
@@ -125,54 +126,57 @@ fn file_line(file: &dto::SpaceFile, original: bool, today: NaiveDate) -> Line {
 }
 
 /// The button that asks before removing: "Remove 5 Files (24 MB)…".
-pub fn remove_label(count: usize, bytes: u64) -> String {
-    match count {
-        0 => "Remove…".to_owned(),
-        1 => format!("Remove 1 File ({})…", format_bytes(bytes)),
-        n => format!(
-            "Remove {} Files ({})…",
-            format_count(n),
-            format_bytes(bytes)
-        ),
+pub fn remove_label(number: usize, bytes: u64) -> String {
+    match number {
+        0 => t("space.remove").to_owned(),
+        n => count("space.remove_files", n, &[("size", &format_bytes(bytes))]),
     }
 }
 
 /// The question before removing.
-pub fn confirm(count: usize, bytes: u64) -> String {
-    format!(
-        "{} ({}) will be deleted from the phone for good. Each is looked up again first: one that changed since the look stays.",
-        files_word(count),
-        format_bytes(bytes)
+pub fn confirm(number: usize, bytes: u64) -> String {
+    tf(
+        "space.confirm",
+        &[
+            ("files", &files_word(number)),
+            ("size", &format_bytes(bytes)),
+        ],
     )
 }
 
 pub fn removing(done: usize, total: usize) -> String {
-    format!(
-        "Removing from the phone: {} of {}",
-        format_count(done),
-        files_word(total)
+    tf(
+        "space.removing",
+        &[("done", &format_count(done)), ("files", &files_word(total))],
     )
 }
 
 /// How removing went: "Removed 5 files, 24 MB freed", and what stayed.
 pub fn removed(removal: &dto::Removal) -> (String, Vec<String>) {
     let title = match removal.removed {
-        0 => "Nothing was removed".to_owned(),
-        n => format!(
-            "Removed {}, {} freed",
-            files_word(n),
-            format_bytes(removal.freed)
+        0 => t("space.nothing_removed").to_owned(),
+        n => tf(
+            "space.removed",
+            &[
+                ("files", &files_word(n)),
+                ("size", &format_bytes(removal.freed)),
+            ],
         ),
     };
     let mut notes: Vec<String> = removal
         .kept
         .iter()
-        .map(|kept| format!("{} stayed: {}", kept.label, why(&kept.why)))
+        .map(|kept| {
+            tf(
+                "space.stayed",
+                &[("label", &kept.label), ("why", &why(&kept.why))],
+            )
+        })
         .collect();
     if let Some(stopped) = &removal.stopped {
-        notes.push(format!(
-            "Stopped: {}",
-            crate::handler::error::to_error_response(stopped.clone()).title
+        notes.push(tf(
+            "space.stopped",
+            &[("why", &crate::handler::error::describe_again(stopped).title)],
         ));
     }
     (title, notes)
@@ -180,17 +184,14 @@ pub fn removed(removal: &dto::Removal) -> (String, Vec<String>) {
 
 fn why(why: &dto::Why) -> String {
     match why {
-        dto::Why::Changed => "it changed since the look, or wasn't in it".to_owned(),
-        dto::Why::Refused(error) => crate::handler::error::to_error_response(error.clone()).title,
-        _ => "the phone kept it".to_owned(),
+        dto::Why::Changed => t("space.why_changed").to_owned(),
+        dto::Why::Refused(error) => crate::handler::error::describe_again(error).title,
+        _ => t("space.why_kept").to_owned(),
     }
 }
 
-fn files_word(count: usize) -> String {
-    match count {
-        1 => "1 file".to_owned(),
-        n => format!("{} files", format_count(n)),
-    }
+fn files_word(number: usize) -> String {
+    count("text.files", number, &[])
 }
 
 #[cfg(test)]

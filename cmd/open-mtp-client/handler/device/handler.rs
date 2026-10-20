@@ -13,6 +13,7 @@ use super::response::{DeviceResponse, PhoneResponse, StorageResponse};
 use crate::handler::diagnosis::{self, DiagnosisResponse};
 use crate::handler::drop_spot::{SidebarDrop, Spot, drop_spot};
 use crate::handler::error::{self, ErrorResponse};
+use crate::i18n::{count, english_only, t, tf};
 
 #[async_trait::async_trait]
 pub trait Service: Send + Sync {
@@ -71,8 +72,40 @@ pub struct Failure {
 #[derive(Debug, Clone)]
 struct Diagnosed {
     response: DiagnosisResponse,
+    source: dto::Diagnosis,
     /// What "Quit … and try again" quits.
     holders: Vec<dto::Holder>,
+}
+
+impl Diagnosed {
+    fn of(diagnosis: &dto::Diagnosis) -> Self {
+        Self {
+            response: diagnosis::to_diagnosis_response(diagnosis),
+            source: diagnosis.clone(),
+            holders: diagnosis.holders.clone().unwrap_or_default(),
+        }
+    }
+}
+
+impl Failure {
+    fn reworded(&self) -> Failure {
+        let owner_seen = self
+            .diagnosis
+            .as_ref()
+            .is_some_and(|diagnosed| diagnosed.source.owner_seen);
+        let mut error = self.error.reworded();
+        if owner_seen {
+            error.hint.clear();
+        }
+        Failure {
+            error,
+            choose: self.choose,
+            diagnosis: self
+                .diagnosis
+                .as_ref()
+                .map(|diagnosed| Box::new(Diagnosed::of(&diagnosed.source))),
+        }
+    }
 }
 
 impl From<ErrorResponse> for Failure {
@@ -134,6 +167,7 @@ impl Message {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum State {
     Idle,
     Connecting,
@@ -142,12 +176,37 @@ enum State {
         storages: Vec<StorageResponse>,
         selected: Option<u64>,
     },
-    /// Closing one phone to open `to`; `from` comes back if `to` has gone.
     Switching {
-        to: String,
+        to: Option<String>,
         from: Box<State>,
     },
     Failed(Failure),
+}
+
+impl State {
+    fn reword(&mut self) {
+        match self {
+            State::Connected {
+                device, storages, ..
+            } => {
+                let level = device.battery_level;
+                *device = mapper::to_device_response(&device.source);
+                device.battery_level = level;
+                device.battery = mapper::battery_label(level);
+                *storages = storages
+                    .iter()
+                    .map(|storage| mapper::to_storage_response(&storage.source))
+                    .collect();
+            }
+            State::Switching { from, .. } => from.reword(),
+            State::Failed(failure) => *failure = failure.reworded(),
+            State::Idle | State::Connecting => {}
+        }
+    }
+}
+
+fn to_name(name: Option<&str>) -> String {
+    name.map_or_else(|| t("device.that_phone").to_owned(), str::to_owned)
 }
 
 pub struct Handler {
@@ -288,7 +347,10 @@ impl Handler {
                 if let State::Switching { to, from } =
                     std::mem::replace(&mut self.state, State::Idle)
                 {
-                    self.notice = Some(format!("{to} is no longer plugged in."));
+                    self.notice = Some(tf(
+                        "device.no_longer_plugged",
+                        &[("to", &to_name(to.as_deref()))],
+                    ));
                     self.state = *from;
                 }
                 self.preferred = self.open_key();
@@ -339,6 +401,7 @@ impl Handler {
             Message::Changed(dto::ContentChange::Battery) => self.reload_battery(),
             Message::Battery(Ok(level)) => {
                 if let State::Connected { device, .. } = &mut self.state {
+                    device.battery_level = level;
                     device.battery = mapper::battery_label(level);
                 }
                 Task::none()
@@ -463,7 +526,7 @@ impl Handler {
             .phones
             .iter()
             .find(|phone| phone.key == key)
-            .map_or_else(|| "That phone".to_owned(), |phone| phone.name.clone());
+            .map(|phone| phone.name.clone());
         let from = std::mem::replace(&mut self.state, State::Idle);
         self.state = State::Switching {
             to,
@@ -499,10 +562,22 @@ impl Handler {
 
     /// How the phone looks to the app, in a line, for a support report. The
     /// serial number is cut to its last four characters.
+    pub fn language_changed(&mut self) {
+        self.notice = None;
+        self.state.reword();
+        let phones: Vec<dto::Phone> = self
+            .phones
+            .iter()
+            .map(|phone| phone.source.clone())
+            .collect();
+        self.phones = mapper::to_phone_responses(&phones);
+        self.places = mapper::relabelled(&self.places);
+    }
+
     pub fn status_line(&self) -> String {
         match &self.state {
-            State::Idle => "not connected".to_owned(),
-            State::Connecting | State::Switching { .. } => "connecting".to_owned(),
+            State::Idle => english_only("not connected".to_owned()),
+            State::Connecting | State::Switching { .. } => english_only("connecting".to_owned()),
             State::Connected {
                 device, storages, ..
             } => {
@@ -511,7 +586,7 @@ impl Handler {
                 let serial = if tail.is_empty() {
                     String::new()
                 } else {
-                    format!(", serial …{tail}")
+                    english_only(format!(", serial …{tail}"))
                 };
                 let count = storages.len();
                 let plural = if count == 1 { "" } else { "s" };
@@ -519,11 +594,15 @@ impl Handler {
                     .link
                     .map(|link| format!(", {}", crate::handler::format::link_label(link)))
                     .unwrap_or_default();
-                format!("{}{serial}, {count} storage{plural}{link}", device.name)
+                english_only(format!(
+                    "{}{serial}, {count} storage{plural}{link}",
+                    device.name
+                ))
             }
-            State::Failed(failed) => {
-                format!("not connected (last problem: {})", failed.error.title)
-            }
+            State::Failed(failed) => english_only(format!(
+                "not connected (last problem: {})",
+                error::english_title(&failed.error.source)
+            )),
         }
     }
 
@@ -682,7 +761,9 @@ impl Handler {
         });
         Some(
             column![
-                text("On the phone").size(13).style(text::secondary),
+                text(t("device.sidebar.on_the_phone"))
+                    .size(13)
+                    .style(text::secondary),
                 column(rows).spacing(2),
             ]
             .spacing(8)
@@ -708,7 +789,9 @@ impl Handler {
                 let mut body = column![
                     device_card(device),
                     rule::horizontal(1),
-                    text("Storage").size(13).style(text::secondary),
+                    text(t("device.sidebar.storage"))
+                        .size(13)
+                        .style(text::secondary),
                     column(storages.iter().map(|storage| {
                         let row = storage_row(storage, *selected == Some(storage.id));
                         if storage.read_only {
@@ -731,15 +814,18 @@ impl Handler {
                 }
                 body.into()
             }
-            State::Connecting => text("Looking for your device…")
+            State::Connecting => text(t("device.sidebar.looking"))
                 .style(text::secondary)
                 .into(),
-            State::Switching { to, .. } => {
-                text(format!("Opening {to}…")).style(text::secondary).into()
-            }
-            State::Idle | State::Failed(_) => {
-                text("No device connected").style(text::secondary).into()
-            }
+            State::Switching { to, .. } => text(tf(
+                "device.sidebar.opening",
+                &[("to", &to_name(to.as_deref()))],
+            ))
+            .style(text::secondary)
+            .into(),
+            State::Idle | State::Failed(_) => text(t("error.not_connected.title"))
+                .style(text::secondary)
+                .into(),
         };
 
         column![header, body].spacing(20).into()
@@ -766,7 +852,7 @@ impl Handler {
                 .push(if is_open {
                     // Inherits the button's colour: text::secondary is
                     // invisible on the selected row's background.
-                    text("open").size(11)
+                    text(t("device.sidebar.open_marker")).size(11)
                 } else {
                     text("")
                 })
@@ -787,7 +873,9 @@ impl Handler {
         });
         let mut list = column![
             rule::horizontal(1),
-            text("Phones").size(13).style(text::secondary),
+            text(t("device.sidebar.phones"))
+                .size(13)
+                .style(text::secondary),
             column(rows).spacing(4),
         ]
         .spacing(10);
@@ -804,22 +892,26 @@ impl Handler {
             State::Idle if self.phones.len() > 1 => self.picker(),
             State::Idle => onboarding(),
             State::Connecting => column![
-                text("Connecting…").size(24),
-                text("Opening a session with your device.").style(text::secondary),
+                text(t("device.main.connecting")).size(24),
+                text(t("device.main.opening_session")).style(text::secondary),
             ]
             .spacing(8)
             .align_x(Alignment::Center)
             .into(),
             State::Switching { to, .. } => column![
-                text(format!("Opening {to}…")).size(24),
-                text("Closing the phone that was open first.").style(text::secondary),
+                text(tf(
+                    "device.sidebar.opening",
+                    &[("to", &to_name(to.as_deref()))],
+                ))
+                .size(24),
+                text(t("device.main.closing_first")).style(text::secondary),
             ]
             .spacing(8)
             .align_x(Alignment::Center)
             .into(),
             State::Failed(failed) if failed.choose && !self.phones.is_empty() => self.picker(),
             State::Failed(failed) => failure(failed),
-            State::Connected { .. } => text("Pick a storage on the left.").into(),
+            State::Connected { .. } => text(t("device.main.pick_storage")).into(),
         };
 
         container(content).center(Length::Fill).padding(32).into()
@@ -903,6 +995,7 @@ async fn connect(
     let storages = service.storages().await?;
     let battery = service.battery().await?;
     let mut device = mapper::to_device_response(&device);
+    device.battery_level = battery;
     device.battery = mapper::battery_label(battery);
     Ok((
         device,
@@ -913,23 +1006,17 @@ async fn connect(
 async fn diagnosed(service: &Arc<dyn Service>, err: dto::Error) -> Failure {
     let choose = err == dto::Error::MultipleDevices;
     let diagnosis = service.diagnose(&err).await;
-    let response = diagnosis::to_diagnosis_response(&diagnosis);
+    let diagnosed = Diagnosed::of(&diagnosis);
     let mut error = error::to_error_response(err);
     if diagnosis.owner_seen {
         // macOS named who has it: guesses such as "Image Capture or Photos"
         // would only blur that.
         error.hint.clear();
     }
-    let diagnosis = (!response.checks.is_empty()).then(|| {
-        Box::new(Diagnosed {
-            response,
-            holders: diagnosis.holders.unwrap_or_default(),
-        })
-    });
     Failure {
         error,
         choose,
-        diagnosis,
+        diagnosis: (!diagnosed.response.checks.is_empty()).then(|| Box::new(diagnosed)),
     }
 }
 
@@ -945,9 +1032,8 @@ impl Handler {
                 .into()
         });
         column![
-            text(format!("{} phones are plugged in", self.phones.len())).size(28),
-            text("Pick the one to open. You can switch to another at any time from the list on the left.")
-                .style(text::secondary),
+            text(count("device.picker.title", self.phones.len(), &[])).size(28),
+            text(t("device.picker.hint")).style(text::secondary),
             column(buttons).spacing(8).max_width(320),
         ]
         .spacing(16)
@@ -975,19 +1061,19 @@ fn device_card(device: &DeviceResponse) -> Element<'_, Message> {
     ]
     .push((!state.is_empty()).then(|| text(state).size(13)))
     .push(
-        button(text("Import new photos…").size(13))
+        button(text(t("device.card.import")).size(13))
             .style(button::text)
             .padding(0)
             .on_press(Message::Request(Request::Import)),
     )
     .push(
-        button(text("Free Up Space…").size(13))
+        button(text(t("device.card.free_up")).size(13))
             .style(button::text)
             .padding(0)
             .on_press(Message::Request(Request::FreeUpSpace)),
     )
     .push(
-        button(text("Disconnect").size(13))
+        button(text(t("label.disconnect")).size(13))
             .style(button::text)
             .padding(0)
             .on_press(Message::Request(Request::Disconnect)),
@@ -1001,7 +1087,11 @@ fn storage_row(storage: &StorageResponse, is_selected: bool) -> Element<'_, Mess
         .spacing(6)
         .align_y(Alignment::Center);
     if storage.read_only {
-        name = name.push(text("read-only").size(11).style(text::secondary));
+        name = name.push(
+            text(t("device.storage.read_only"))
+                .size(11)
+                .style(text::secondary),
+        );
     }
 
     let content = column![
@@ -1027,17 +1117,17 @@ fn storage_row(storage: &StorageResponse, is_selected: bool) -> Element<'_, Mess
 
 fn onboarding<'a>() -> Element<'a, Message> {
     let steps = column![
-        text("1.  Plug your Android phone into this Mac with a USB cable."),
-        text("2.  Unlock the phone."),
-        text("3.  Tap the USB notification and choose “File transfer”."),
+        text(t("device.onboarding.step_1")),
+        text(t("device.onboarding.step_2")),
+        text(t("device.onboarding.step_3")),
     ]
     .spacing(8);
 
     column![
-        text("Connect a device").size(28),
+        text(t("device.onboarding.title")).size(28),
         steps,
         space().height(8),
-        button(text("Connect").size(16))
+        button(text(t("label.connect")).size(16))
             .padding([10, 24])
             .style(button::primary)
             .on_press(Message::Request(Request::Connect)),
@@ -1059,9 +1149,9 @@ fn failure(failed: &Failure) -> Element<'_, Message> {
     // A phone that went away or stopped answering is reconnected; anything
     // else is simply tried again.
     let again = if error.device_lost {
-        "Reconnect"
+        t("label.reconnect")
     } else {
-        "Try again"
+        t("label.try_again")
     };
     let try_again = |style: fn(&iced::Theme, button::Status) -> button::Style| {
         button(text(again).size(16))
@@ -1359,6 +1449,156 @@ mod tests {
         assert!(matches!(handler.state, State::Idle));
     }
 
+    fn in_thai<Output>(work: impl FnOnce() -> Output) -> Output {
+        crate::i18n::with_language(dto::Language::Thai, work)
+    }
+
+    fn phone_named(key: &str, name: &str) -> PhoneResponse {
+        PhoneResponse {
+            key: key.into(),
+            name: name.into(),
+            source: dto::Phone {
+                key: key.into(),
+                manufacturer: String::new(),
+                model: name.into(),
+                serial: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_language_switch_rewords_the_phone_card_and_the_storage_lines() {
+        let mut handler = handler();
+        let _ = handler.update(connected(&[storage(1, "Internal")]));
+        let _ = handler.update(Message::Battery(Ok(Some(76))));
+        let seen = |handler: &Handler| match &handler.state {
+            State::Connected {
+                device, storages, ..
+            } => (
+                device.battery.clone(),
+                storages[0].usage.clone(),
+                device.name.clone(),
+            ),
+            _ => panic!("not connected"),
+        };
+        assert_eq!(
+            seen(&handler),
+            (
+                Some("Battery 76%".into()),
+                "16.0 GB free of 64.0 GB".into(),
+                "Pixel 9".into()
+            )
+        );
+
+        in_thai(|| handler.language_changed());
+
+        assert_eq!(
+            seen(&handler),
+            in_thai(|| (
+                Some(tf("device.battery", &[("level", "76")])),
+                tf(
+                    "device.usage",
+                    &[("free", "16.0 GB"), ("capacity", "64.0 GB")]
+                ),
+                "Pixel 9".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_language_switch_says_a_failed_connect_again_with_its_checklist() {
+        let mut handler = handler();
+        let _ = handler.update(failed(dto::Error::NoDevice));
+        let diagnosis = dto::Diagnosis {
+            phones: Some(Vec::new()),
+            ..Default::default()
+        };
+        let mut failure = Failure::from(error::to_error_response(dto::Error::NoDevice));
+        failure.diagnosis = Some(Box::new(Diagnosed::of(&diagnosis)));
+        let _ = handler.update(Message::Connected(Err(failure)));
+
+        in_thai(|| handler.language_changed());
+
+        let State::Failed(failed) = &handler.state else {
+            panic!("still failed");
+        };
+        let said = in_thai(|| error::describe_again(&dto::Error::NoDevice).title);
+        assert_ne!(said, error::describe_again(&dto::Error::NoDevice).title);
+        assert_eq!(failed.error.title, said);
+        let checks = &failed.diagnosis.as_ref().unwrap().response.checks;
+        assert_eq!(
+            checks[0].text,
+            in_thai(|| diagnosis::to_diagnosis_response(&diagnosis).checks[0]
+                .text
+                .clone())
+        );
+        assert_ne!(
+            checks[0].text,
+            "No phone seen on USB. Try another cable (some only charge), another port, and no USB hub."
+        );
+    }
+
+    #[test]
+    fn a_language_switch_rewords_the_usual_places() {
+        let mut handler = handler();
+        let _ = handler.update(connected(&[storage(1, "Internal")]));
+        let _ = handler.update(Message::Places {
+            key: handler.places_for.clone().unwrap().0,
+            storage_id: 1,
+            result: Ok(vec!["/DCIM/Camera".into(), "/Music".into()]),
+        });
+        let labels = |handler: &Handler| -> Vec<String> {
+            handler
+                .places
+                .iter()
+                .map(|(label, _)| label.clone())
+                .collect()
+        };
+        assert_eq!(labels(&handler), ["Camera", "Music"]);
+
+        in_thai(|| handler.language_changed());
+
+        assert_eq!(
+            labels(&handler),
+            in_thai(|| [t("device.place.camera"), t("device.place.music")])
+        );
+        assert_eq!(handler.places[0].1, "/DCIM/Camera");
+    }
+
+    #[test]
+    fn a_language_switch_clears_the_notice_and_names_an_unnamed_phone_again() {
+        let mut handler = handler();
+        handler.notice = Some("Pixel 7 is no longer plugged in.".into());
+        let unnamed = dto::Phone {
+            key: "usb@1".into(),
+            manufacturer: String::new(),
+            model: String::new(),
+            serial: String::new(),
+        };
+        let _ = handler.update(Message::Phones(mapper::to_phone_responses(&[unnamed])));
+        assert_eq!(handler.phones[0].name, "Phone");
+
+        in_thai(|| handler.language_changed());
+
+        assert!(handler.notice.is_none());
+        assert_eq!(
+            handler.phones[0].name,
+            in_thai(|| t("device.phone_fallback"))
+        );
+        assert_ne!(handler.phones[0].name, "Phone");
+    }
+
+    #[test]
+    fn a_language_switch_in_the_middle_of_a_switch_keeps_the_phone_it_came_from() {
+        let mut handler = handler();
+        let _ = handler.update(connected(&[storage(1, "Internal")]));
+
+        in_thai(|| handler.language_changed());
+
+        assert!(handler.is_connected());
+        assert_eq!(handler.selected_storage(), Some((1, "Internal".to_owned())));
+    }
+
     #[test]
     fn a_failed_connect_shows_the_error() {
         let mut handler = handler();
@@ -1544,6 +1784,7 @@ mod tests {
             device_lost: false,
             privacy: None,
             cancelled: false,
+            source: dto::Error::NoDevice,
         };
 
         let _ = failure(&error.into());
@@ -1864,6 +2105,7 @@ mod tests {
             error: error::to_error_response(dto::Error::DeviceInUse),
             diagnosis: Some(Box::new(Diagnosed {
                 response: DiagnosisResponse::default(),
+                source: dto::Diagnosis::default(),
                 holders: vec![holder("Preview", false)],
             })),
         };
@@ -1889,6 +2131,7 @@ mod tests {
             error: error::to_error_response(dto::Error::DeviceInUse),
             diagnosis: Some(Box::new(Diagnosed {
                 response: DiagnosisResponse::default(),
+                source: dto::Diagnosis::default(),
                 holders: vec![holder("Photos", false), holder("Preview", false)],
             })),
         })));
@@ -1920,6 +2163,7 @@ mod tests {
             error: error::to_error_response(dto::Error::DeviceInUse),
             diagnosis: Some(Box::new(Diagnosed {
                 response: DiagnosisResponse::default(),
+                source: dto::Diagnosis::default(),
                 holders: vec![],
             })),
         })));
@@ -1934,7 +2178,11 @@ mod tests {
         Failure {
             choose: false,
             error: error::to_error_response(dto::Error::DeviceInUse),
-            diagnosis: Some(Box::new(Diagnosed { response, holders })),
+            diagnosis: Some(Box::new(Diagnosed {
+                response,
+                source: dto::Diagnosis::default(),
+                holders,
+            })),
         }
     }
 
@@ -2375,7 +2623,9 @@ mod tests {
         let _ = handler.update(open_request("S24"));
         let _ = handler.update(open_request("ABC123"));
 
-        assert!(matches!(&handler.state, State::Switching { to, .. } if to == "Galaxy S24"));
+        assert!(
+            matches!(&handler.state, State::Switching { to, .. } if to.as_deref() == Some("Galaxy S24"))
+        );
         assert_eq!(service.asked.lock().unwrap().len(), asked, "no connect yet");
     }
 
@@ -2464,10 +2714,7 @@ mod tests {
     fn with_only_the_open_phone_plugged_in_no_list_is_shown() {
         let mut handler = handler();
         let _ = handler.update(connected(&[storage(1, "Internal")]));
-        let _ = handler.update(Message::Phones(vec![PhoneResponse {
-            key: "ABC123".into(),
-            name: "Pixel 9".into(),
-        }]));
+        let _ = handler.update(Message::Phones(vec![phone_named("ABC123", "Pixel 9")]));
 
         let mut ui = iced_test::simulator(handler.view_sidebar());
 
@@ -2479,14 +2726,8 @@ mod tests {
         let mut handler = handler();
         let _ = handler.update(connected(&[storage(1, "Internal")]));
         let _ = handler.update(Message::Phones(vec![
-            PhoneResponse {
-                key: "ABC123".into(),
-                name: "Pixel 9".into(),
-            },
-            PhoneResponse {
-                key: "S24".into(),
-                name: "Galaxy S24".into(),
-            },
+            phone_named("ABC123", "Pixel 9"),
+            phone_named("S24", "Galaxy S24"),
         ]));
 
         handler.refuse_switch("Wait for the transfers.".into());

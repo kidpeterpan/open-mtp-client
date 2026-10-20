@@ -8,6 +8,7 @@ mod editing;
 mod entry;
 mod error;
 mod import;
+mod language;
 mod listing;
 mod menu;
 mod mirror;
@@ -31,8 +32,9 @@ pub use device::{Abilities, ContentChange, Device, DeviceChange, Phone, UsbSpeed
 pub use doctor::{Diagnosis, Holder, MacInfo};
 pub use editing::{CopyState, EditRequest, MOST_EDITS, WorkingCopy};
 pub use entry::{Entry, THUMBNAIL_SIZE, Thumbnail, Timestamp};
-pub use error::{Error, NameProblem, PrivacyPane};
+pub use error::{Disk, Error, NameProblem, PrivacyPane};
 pub use import::{ImportFolders, ImportPreview, ImportRequest};
+pub use language::{Language, LanguageChoice};
 pub use listing::{ListingUpdate, ReadTiming};
 pub use menu::{Menu, MenuEntry, MenuKeys, MenuRole, MenuState, SystemAction};
 pub use mirror::{

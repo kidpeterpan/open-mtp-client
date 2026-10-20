@@ -27,6 +27,7 @@ pub struct Settings {
     pub keep_deleted: bool,
     /// How tall the rows of a list are, in both panes.
     pub list_density: Density,
+    pub language: super::LanguageChoice,
     /// The version of the app that last ran: after an update, what is new
     /// since then is shown once. `None` before the first run.
     pub last_seen_version: Option<Version>,
@@ -190,6 +191,7 @@ impl Default for Settings {
             finish_sound: false,
             keep_deleted: false,
             list_density: Density::Standard,
+            language: super::LanguageChoice::FollowMac,
             last_seen_version: None,
             window: None,
             mac_order: SortOrder::default(),

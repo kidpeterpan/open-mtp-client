@@ -14,6 +14,7 @@ use internal::dto;
 use super::mapper;
 use super::request::Request;
 use super::response::Banner;
+use crate::i18n::t;
 
 pub trait Service: Send + Sync {
     /// Reports the user has not been told about, newest first.
@@ -33,10 +34,49 @@ pub enum Message {
     Request(Request),
 }
 
+enum Cause {
+    Earlier(Vec<dto::CrashNote>),
+    Stopped(dto::CrashNote),
+}
+
 /// What the banner is saying.
 struct Shown {
+    cause: Cause,
     banner: Banner,
     file: Option<PathBuf>,
+    open_failed: bool,
+}
+
+impl Shown {
+    fn new(cause: Cause) -> Option<Self> {
+        let (banner, file) = Self::worded(&cause, false)?;
+        Some(Self {
+            cause,
+            banner,
+            file,
+            open_failed: false,
+        })
+    }
+
+    fn worded(cause: &Cause, open_failed: bool) -> Option<(Banner, Option<PathBuf>)> {
+        let (mut banner, file) = match cause {
+            Cause::Earlier(notes) => (
+                mapper::earlier(notes)?,
+                notes.first().and_then(|note| note.file.clone()),
+            ),
+            Cause::Stopped(note) => (mapper::stopped(note), note.file.clone()),
+        };
+        if open_failed {
+            banner.hint = t("crash.could_not_open").to_owned();
+        }
+        Some((banner, file))
+    }
+
+    fn reworded(&mut self) {
+        if let Some((banner, _)) = Self::worded(&self.cause, self.open_failed) {
+            self.banner = banner;
+        }
+    }
 }
 
 pub struct Handler {
@@ -48,11 +88,7 @@ pub struct Handler {
 
 impl Handler {
     pub fn new(service: Arc<dyn Service>) -> Self {
-        let notes = service.unreported();
-        let shown = mapper::earlier(&notes).map(|banner| Shown {
-            banner,
-            file: notes.first().and_then(|note| note.file.clone()),
-        });
+        let shown = Shown::new(Cause::Earlier(service.unreported()));
         let seen = service.panics();
         Self {
             service,
@@ -65,6 +101,12 @@ impl Handler {
         self.shown.is_some()
     }
 
+    pub fn language_changed(&mut self) {
+        if let Some(shown) = &mut self.shown {
+            shown.reworded();
+        }
+    }
+
     /// Looks for a panic since the last look: one atomic load, so `app.rs`
     /// does it after every update. A newer panic replaces what is shown.
     pub fn check(&mut self) {
@@ -74,10 +116,7 @@ impl Handler {
         }
         self.seen = panics;
         if let Some(note) = self.service.last_panic() {
-            self.shown = Some(Shown {
-                banner: mapper::stopped(&note),
-                file: note.file,
-            });
+            self.shown = Shown::new(Cause::Stopped(note));
         }
     }
 
@@ -89,8 +128,8 @@ impl Handler {
                     && let Some(file) = &shown.file
                     && !self.service.open(file)
                 {
-                    shown.banner.hint =
-                        "The report could not be opened. It is in the app's folder on this Mac, in Application Support, under crashes.".to_owned();
+                    shown.open_failed = true;
+                    shown.reworded();
                 }
             }
             Request::Dismiss => {
@@ -108,13 +147,13 @@ impl Handler {
         let mut actions = row![].spacing(8).align_y(Alignment::Center);
         if banner.can_show {
             actions = actions.push(
-                button(text("Show Report").size(13))
+                button(text(t("crash.show_report")).size(13))
                     .style(button::secondary)
                     .on_press(Message::Request(Request::Show)),
             );
         }
         actions = actions.push(
-            button(text("Dismiss").size(13))
+            button(text(t("label.dismiss")).size(13))
                 .style(button::secondary)
                 .on_press(Message::Request(Request::Dismiss)),
         );
@@ -161,6 +200,61 @@ mod tests {
 
     fn shows(handler: &Handler, words: &str) -> bool {
         iced_test::simulator(handler.view()).find(words).is_ok()
+    }
+
+    #[test]
+    fn a_change_of_language_words_the_banner_again_and_a_failed_open_stays_failed() {
+        use internal::dto::Language;
+
+        let fake = FakeCrash {
+            unreported: vec![note(1_792_000_000_000, Some("/c/crash-1.txt"))],
+            open_fails: true,
+            ..FakeCrash::default()
+        };
+        let (mut handler, _) = handler_with(fake);
+        assert!(shows(&handler, "Show Report"));
+
+        for language in [
+            Language::Thai,
+            Language::Japanese,
+            Language::ChineseSimplified,
+        ] {
+            crate::i18n::set_language(language);
+            handler.language_changed();
+
+            assert!(
+                shows(&handler, crate::i18n::t("crash.show_report")),
+                "{language:?}"
+            );
+            assert!(
+                shows(&handler, crate::i18n::t("label.dismiss")),
+                "{language:?}"
+            );
+            assert!(!shows(&handler, "Show Report"), "{language:?}");
+        }
+
+        let _ = handler.update(Message::Request(Request::Show));
+        crate::i18n::set_language(Language::English);
+        handler.language_changed();
+        assert!(shows(
+            &handler,
+            "The report could not be opened. It is in the app's folder on this Mac, in Application Support, under crashes."
+        ));
+    }
+
+    #[test]
+    fn a_panic_banner_is_said_again_in_the_new_language_too() {
+        let (mut handler, fake) = handler_with(FakeCrash::default());
+        fake.panic_at(1_792_000_000_000, Some("/c/crash-2.txt"));
+        handler.check();
+        assert!(shows(&handler, "Dismiss"));
+
+        crate::i18n::set_language(internal::dto::Language::Thai);
+        handler.language_changed();
+
+        assert!(handler.is_visible());
+        assert!(shows(&handler, crate::i18n::t("label.dismiss")));
+        assert!(!shows(&handler, "Dismiss"));
     }
 
     #[test]

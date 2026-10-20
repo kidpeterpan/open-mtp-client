@@ -5,8 +5,9 @@ use internal::dto;
 use super::response::{ProgressResponse, ReportRow, SummaryResponse};
 use crate::handler::error;
 use crate::handler::format::{
-    escape_odd, format_bytes, format_count, format_duration, format_elapsed,
+    comma_list, escape_odd, format_bytes, format_count, format_duration, format_elapsed,
 };
+use crate::i18n::{count, key, t, tf};
 
 /// Speed and time left are noise until a moment of data has come in.
 const MIN_SECONDS_FOR_ESTIMATE: f64 = 1.0;
@@ -18,40 +19,52 @@ const KEEP_UNLOCKED_FROM: u64 = 100_000_000;
 /// The most failures spelled out in a result; the rest are counted.
 const MAX_FAILURES_SHOWN: usize = 5;
 
-/// Shown while the selection is being counted, before the first byte.
-pub fn preparing_response(direction: dto::Direction, moving: bool) -> ProgressResponse {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Doing {
+    Transfer,
+    Import,
+    Mirror,
+    Check,
+}
+
+fn waiting(title: &str, detail: &str, note: Option<String>) -> ProgressResponse {
     ProgressResponse {
-        title: format!(
-            "Preparing {}…",
-            if moving { "move" } else { noun(direction) }
-        ),
+        title: title.to_owned(),
         current_file: String::new(),
         file_fraction: 0.0,
         total_fraction: 0.0,
-        detail: "Counting files…".to_owned(),
-        note: None,
+        detail: detail.to_owned(),
+        note,
     }
+}
+
+fn joined(parts: Vec<String>) -> String {
+    parts.join(" · ")
+}
+
+/// Shown while the selection is being counted, before the first byte.
+pub fn preparing_response(direction: dto::Direction, moving: bool) -> ProgressResponse {
+    let title = match (moving, direction) {
+        (true, _) => key("transfer.preparing.move"),
+        (false, dto::Direction::Download) => key("transfer.preparing.download"),
+        (false, dto::Direction::Upload) => key("transfer.preparing.upload"),
+        (false, dto::Direction::Local) => key("transfer.preparing.copy"),
+    };
+    waiting(t(title), t("transfer.counting_files"), None)
 }
 
 /// Shown while an import looks for what is new.
 pub fn preparing_import() -> ProgressResponse {
-    ProgressResponse {
-        title: "Looking for new photos…".to_owned(),
-        current_file: String::new(),
-        file_fraction: 0.0,
-        total_fraction: 0.0,
-        detail: "Reading DCIM on the phone…".to_owned(),
-        note: None,
-    }
+    waiting(
+        t("transfer.preparing.import"),
+        t("transfer.preparing.import_detail"),
+        None,
+    )
 }
 
 /// An import's progress: a download's, said as importing.
 pub fn to_import_progress(progress: &dto::TransferProgress) -> ProgressResponse {
-    let mut response = to_progress_response(progress);
-    if let Some(rest) = response.title.strip_prefix("Downloading") {
-        response.title = format!("Importing{rest}");
-    }
-    response
+    progress_response(progress, Doing::Import)
 }
 
 /// How an import went: what was new, and what was there already.
@@ -61,31 +74,27 @@ pub fn to_import_summary(summary: &dto::TransferSummary) -> SummaryResponse {
         removal: None,
         ..summary.clone()
     };
-    let mut response = to_summary_response(&copied);
-    response.detail = response
-        .detail
-        .replace(" already there", " imported before");
+    let mut response = summary_response(&copied, key("transfer.part.imported_before"));
     if let Some(removal) = &summary.removal {
         if removal.removed > 0 {
-            response.detail.push_str(&format!(
-                " · {} removed from the phone, {} freed",
-                files(removal.removed),
-                format_bytes(removal.freed)
-            ));
+            let removed = tf(
+                "transfer.import.removed",
+                &[
+                    ("files", &files(removal.removed)),
+                    ("size", &format_bytes(removal.freed)),
+                ],
+            );
+            response.detail = joined(vec![response.detail, removed]);
         }
         response.notes = removal_notes(removal);
     }
     if summary.failures.is_empty() {
         response.title = match summary.files {
-            0 => "No new photos or videos".to_owned(),
-            1 => format!(
-                "Imported 1 photo or video ({})",
-                format_bytes(summary.bytes)
-            ),
-            n => format!(
-                "Imported {} photos and videos ({})",
-                format_count(n),
-                format_bytes(summary.bytes)
+            0 => t("transfer.import.none").to_owned(),
+            n => count(
+                "transfer.import.title",
+                n,
+                &[("size", &format_bytes(summary.bytes))],
             ),
         };
     }
@@ -94,25 +103,16 @@ pub fn to_import_summary(summary: &dto::TransferSummary) -> SummaryResponse {
 
 /// Shown while a mirror compares the two folders.
 pub fn preparing_mirror() -> ProgressResponse {
-    ProgressResponse {
-        title: "Comparing the folders…".to_owned(),
-        current_file: String::new(),
-        file_fraction: 0.0,
-        total_fraction: 0.0,
-        detail: "Reading both sides…".to_owned(),
-        note: None,
-    }
+    waiting(
+        t("transfer.preparing.mirror"),
+        t("transfer.preparing.mirror_detail"),
+        None,
+    )
 }
 
 /// A mirror's progress: a download's or an upload's, said as mirroring.
 pub fn to_mirror_progress(progress: &dto::TransferProgress) -> ProgressResponse {
-    let mut response = to_progress_response(progress);
-    for verb in ["Downloading", "Uploading"] {
-        if let Some(rest) = response.title.strip_prefix(verb) {
-            response.title = format!("Mirroring{rest}");
-        }
-    }
-    response
+    progress_response(progress, Doing::Mirror)
 }
 
 /// How a mirror went: copied, replaced, removed, kept and left alone.
@@ -122,61 +122,71 @@ pub fn to_mirror_summary(summary: &dto::TransferSummary) -> SummaryResponse {
     let onto_phone = summary.direction == dto::Direction::Upload;
     let mut done = Vec::new();
     if mirrored.copied > 0 {
-        done.push(format!("{} copied", files(mirrored.copied)));
+        done.push(tf(
+            "transfer.mirror.copied",
+            &[("files", &files(mirrored.copied))],
+        ));
     }
     if mirrored.replaced > 0 {
-        done.push(format!("{} replaced", files(mirrored.replaced)));
+        done.push(tf(
+            "transfer.mirror.replaced",
+            &[("files", &files(mirrored.replaced))],
+        ));
     }
     if mirrored.removed > 0 {
-        done.push(format!("{} removed", items(mirrored.removed)));
+        done.push(tf(
+            "transfer.mirror.removed",
+            &[("items", &items(mirrored.removed))],
+        ));
     }
     response.title = match (done.is_empty(), summary.failures.is_empty()) {
-        (true, true) => "Already the same".to_owned(),
-        (true, false) => "Nothing was mirrored".to_owned(),
-        (false, _) => format!("Mirrored: {}", done.join(", ")),
+        (true, true) => t("transfer.mirror.same").to_owned(),
+        (true, false) => t("transfer.mirror.nothing").to_owned(),
+        (false, _) => tf("transfer.mirror.title", &[("done", &comma_list(&done))]),
     };
-    let mut detail = format!(
-        "{} {}",
-        if onto_phone { "onto" } else { "into" },
-        folder_name(&summary.destination)
-    );
+    let folder = folder_name(&summary.destination);
+    let place = if onto_phone {
+        key("transfer.mirror.onto")
+    } else {
+        key("transfer.mirror.into")
+    };
+    let mut parts = vec![tf(place, &[("folder", &folder)])];
     if mirrored.removed > 0 {
-        detail.push_str(if onto_phone {
-            " · removed ones deleted from the phone"
-        } else {
-            " · removed and replaced ones are in the Trash"
-        });
+        parts.push(
+            if onto_phone {
+                t("transfer.mirror.part_removed_phone")
+            } else {
+                t("transfer.mirror.part_removed_trash")
+            }
+            .to_owned(),
+        );
     } else if mirrored.replaced > 0 && !onto_phone {
-        detail.push_str(" · the old versions are in the Trash");
+        parts.push(t("transfer.mirror.part_old_versions").to_owned());
     }
     if mirrored.kept > 0 {
-        detail.push_str(&format!(
-            " · {} only there, kept",
-            format_count(mirrored.kept)
-        ));
+        parts.push(count("transfer.mirror.part_only_there", mirrored.kept, &[]));
     }
     if mirrored.conflicts > 0 {
-        detail.push_str(&format!(
-            " · {} left alone (names clash)",
-            format_count(mirrored.conflicts)
-        ));
+        parts.push(count("transfer.mirror.part_clash", mirrored.conflicts, &[]));
     }
     if !summary.failures.is_empty() {
-        detail.push_str(&format!(" · {} failed", summary.failures.len()));
+        parts.push(count("transfer.part.failed", summary.failures.len(), &[]));
     }
-    response.detail = detail;
+    response.detail = joined(parts);
     response
 }
 
 /// The queue's name for a mirror.
 pub fn mirror_label(request: &dto::MirrorRequest) -> String {
     match request.direction {
-        dto::MirrorDirection::ToMac => {
-            format!("Mirror {} onto the Mac", folder_name(&request.phone_folder))
-        }
-        dto::MirrorDirection::ToPhone => {
-            format!("Mirror {} onto the phone", folder_name(&request.mac_folder))
-        }
+        dto::MirrorDirection::ToMac => tf(
+            "transfer.mirror.label_to_mac",
+            &[("folder", &folder_name(&request.phone_folder))],
+        ),
+        dto::MirrorDirection::ToPhone => tf(
+            "transfer.mirror.label_to_phone",
+            &[("folder", &folder_name(&request.mac_folder))],
+        ),
     }
 }
 
@@ -184,8 +194,11 @@ pub fn mirror_label(request: &dto::MirrorRequest) -> String {
 /// keeping a copy in the Trash".
 pub fn delete_keeping_label(names: &[String]) -> String {
     match names {
-        [one] => format!("Delete “{one}”, keeping a copy in the Trash"),
-        names => format!("Delete {}, keeping copies in the Trash", items(names.len())),
+        [one] => tf("transfer.delete.label_one", &[("name", one)]),
+        names => tf(
+            "transfer.delete.label_many",
+            &[("items", &items(names.len()))],
+        ),
     }
 }
 
@@ -195,20 +208,25 @@ pub fn to_delete_summary(summary: &dto::TransferSummary) -> SummaryResponse {
     let mut response = to_summary_response(summary);
     let removal = summary.removal.clone().unwrap_or_default();
     response.title = match removal.removed {
-        0 => "Nothing was deleted".to_owned(),
-        n => format!("Deleted {} from the phone", files(n)),
+        0 => t("transfer.delete.nothing").to_owned(),
+        n => tf("transfer.delete.done", &[("files", &files(n))]),
     };
-    response.detail = "copies are in the Mac's Trash".to_owned();
+    response.detail = t("transfer.delete.detail").to_owned();
     response.notes = removal
         .kept
         .iter()
-        .map(|kept| format!("{} stayed on the phone: {}", kept.label, why(&kept.why)))
-        .chain(
-            removal
-                .stopped
-                .iter()
-                .map(|error| format!("Stopped: {}", error::to_error_response(error.clone()).title)),
-        )
+        .map(|kept| {
+            tf(
+                "transfer.delete.kept_note",
+                &[("label", &kept.label), ("why", &why(&kept.why))],
+            )
+        })
+        .chain(removal.stopped.iter().map(|stopped| {
+            tf(
+                "transfer.delete.stopped",
+                &[("reason", &error::describe_again(stopped).title)],
+            )
+        }))
         .collect();
     response.left = Vec::new();
     response.reveal = None;
@@ -219,28 +237,33 @@ pub fn to_delete_summary(summary: &dto::TransferSummary) -> SummaryResponse {
 /// The queue's name for sending an edit back: "Send “notes.txt” back to
 /// the phone".
 pub fn send_edit_label(name: &str) -> String {
-    format!("Send “{name}” back to the phone")
+    tf("transfer.edit.send_label", &[("name", name)])
 }
 
 /// A working copy saved on the Mac: "notes.txt was changed on the Mac".
 pub fn edit_saved_title(name: &str) -> String {
-    format!("{name} was changed on the Mac")
+    tf("transfer.edit.saved_title", &[("name", name)])
 }
 
 /// A working copy not changed yet.
 pub fn edit_open_title(name: &str) -> String {
-    format!("{name} is open for editing on the Mac")
+    tf("transfer.edit.open_title", &[("name", name)])
 }
 
 /// Under a saved edit, with its phone open.
-pub const EDIT_SEND_NOTE: &str = "Send to Phone replaces it there (the phone keeps no old version). If it changed on the phone too, your edit goes beside it.";
+pub fn edit_send_note() -> &'static str {
+    t("transfer.edit.send_note")
+}
 
 /// Under a saved edit whose phone isn't open.
-pub const EDIT_PHONE_NOTE: &str = "Connect the phone it came from to send it.";
+pub fn edit_phone_note() -> &'static str {
+    t("transfer.edit.phone_note")
+}
 
 /// Under a working copy not changed yet.
-pub const EDIT_OPEN_NOTE: &str =
-    "Save it in its app and it can be sent back to the phone. Nothing is sent until you say so.";
+pub fn edit_open_note() -> &'static str {
+    t("transfer.edit.open_note")
+}
 
 /// How sending an edit went: over the phone's file, or beside it.
 pub fn to_edit_summary(summary: &dto::TransferSummary, name: &str) -> SummaryResponse {
@@ -252,12 +275,12 @@ pub fn to_edit_summary(summary: &dto::TransferSummary, name: &str) -> SummaryRes
         .filter(|sent| sent != name);
     (response.title, response.detail) = match beside {
         Some(sent) => (
-            format!("Sent your edit as “{sent}”"),
-            format!("{name} had changed on the phone too, so both are kept"),
+            tf("transfer.edit.sent_beside", &[("sent", &sent)]),
+            tf("transfer.edit.sent_beside_detail", &[("name", name)]),
         ),
         None => (
-            format!("Sent “{name}” back to the phone"),
-            "it replaced the phone's copy".to_owned(),
+            tf("transfer.edit.sent", &[("name", name)]),
+            t("transfer.edit.sent_detail").to_owned(),
         ),
     };
     response.reveal = None;
@@ -267,38 +290,37 @@ pub fn to_edit_summary(summary: &dto::TransferSummary, name: &str) -> SummaryRes
 
 /// The queue's name for a check of contents: "Check 3 items against Backup".
 pub fn check_label(request: &dto::CheckRequest) -> String {
-    let what = match request.names.as_slice() {
-        [one] => format!("“{one}”"),
-        names => items(names.len()),
-    };
-    format!(
-        "Check {what} against {} on your Mac",
-        folder_name(&request.mac_folder)
-    )
+    let folder = folder_name(&request.mac_folder);
+    match request.names.as_slice() {
+        [one] => tf(
+            "transfer.check.label_one",
+            &[("name", one), ("folder", &folder)],
+        ),
+        names => tf(
+            "transfer.check.label_many",
+            &[("items", &items(names.len())), ("folder", &folder)],
+        ),
+    }
 }
 
 /// Shown while a check finds the files to compare.
 pub fn preparing_check() -> ProgressResponse {
-    ProgressResponse {
-        title: "Checking contents…".to_owned(),
-        current_file: String::new(),
-        file_fraction: 0.0,
-        total_fraction: 0.0,
-        detail: "Finding the files on both sides…".to_owned(),
-        note: Some(CHECK_NOTE.to_owned()),
-    }
+    waiting(
+        t("transfer.preparing.check"),
+        t("transfer.preparing.check_detail"),
+        Some(check_note().to_owned()),
+    )
 }
 
 /// Under a check while it runs: what it costs and what it leaves alone.
-pub const CHECK_NOTE: &str = "Every file is read from the phone and compared with the Mac's, byte for byte. Nothing is changed.";
+pub fn check_note() -> &'static str {
+    t("transfer.check_note")
+}
 
 /// A check's progress: a download's, said as checking.
 pub fn to_check_progress(progress: &dto::TransferProgress) -> ProgressResponse {
-    let mut response = to_progress_response(progress);
-    if let Some(rest) = response.title.strip_prefix("Downloading") {
-        response.title = format!("Checking{rest}");
-    }
-    response.note = Some(CHECK_NOTE.to_owned());
+    let mut response = progress_response(progress, Doing::Check);
+    response.note = Some(check_note().to_owned());
     response
 }
 
@@ -309,39 +331,34 @@ pub fn to_check_summary(summary: &dto::TransferSummary) -> SummaryResponse {
     let compared = summary.compared.unwrap_or_default();
     let total = compared.total();
     let mut found = Vec::new();
-    match compared.differ {
-        0 => {}
-        1 => found.push("1 differs".to_owned()),
-        n => found.push(format!("{} differ", format_count(n))),
+    if compared.differ > 0 {
+        found.push(count("transfer.check.differ", compared.differ, &[]));
     }
     if compared.missing > 0 {
-        found.push(format!(
-            "{} on one side only",
-            format_count(compared.missing)
-        ));
+        found.push(count("transfer.check.one_side", compared.missing, &[]));
     }
     if compared.unreadable > 0 {
-        found.push(format!(
-            "{} couldn't be read",
-            format_count(compared.unreadable)
-        ));
+        found.push(count("transfer.check.unreadable", compared.unreadable, &[]));
     }
     if compared.identical > 0 {
-        found.push(format!("{} identical", format_count(compared.identical)));
+        found.push(count("transfer.check.identical", compared.identical, &[]));
     }
     response.title = if total == 0 {
-        "Nothing to check".to_owned()
+        t("transfer.check.nothing").to_owned()
     } else if compared.identical == total {
         match total {
-            1 => "Identical".to_owned(),
-            n => format!("All {} identical", files(n)),
+            1 => t("transfer.check.single_identical").to_owned(),
+            n => tf("transfer.check.all_identical", &[("files", &files(n))]),
         }
     } else {
-        format!("Checked {}: {}", files(total), found.join(", "))
+        tf(
+            "transfer.check.title",
+            &[("files", &files(total)), ("found", &comma_list(&found))],
+        )
     };
-    response.detail = format!(
-        "against {} on your Mac · nothing was changed",
-        folder_name(&summary.destination)
+    response.detail = tf(
+        "transfer.check.detail",
+        &[("folder", &folder_name(&summary.destination))],
     );
     response.mismatched = compared.differ + compared.missing > 0;
     // Nothing arrived anywhere: no Finder, and no report file written
@@ -353,77 +370,93 @@ pub fn to_check_summary(summary: &dto::TransferSummary) -> SummaryResponse {
 
 /// The queue's name for an import.
 pub fn import_label(destination: &str) -> String {
-    format!("Import new photos to {}", folder_name(destination))
+    tf(
+        "transfer.import.label",
+        &[("folder", &folder_name(destination))],
+    )
 }
 
 /// Shown while a copy through the Mac is being counted.
 pub fn preparing_via_mac(moving: bool) -> ProgressResponse {
-    ProgressResponse {
-        title: format!(
-            "Preparing {} via your Mac…",
-            if moving { "move" } else { "copy" }
-        ),
-        current_file: String::new(),
-        file_fraction: 0.0,
-        total_fraction: 0.0,
-        detail: "Counting files…".to_owned(),
-        note: None,
-    }
+    let title = if moving {
+        key("transfer.preparing.via_mac_move")
+    } else {
+        key("transfer.preparing.via_mac_copy")
+    };
+    waiting(t(title), t("transfer.counting_files"), None)
 }
 
 pub fn to_progress_response(progress: &dto::TransferProgress) -> ProgressResponse {
+    progress_response(progress, Doing::Transfer)
+}
+
+fn progress_title(progress: &dto::TransferProgress, doing: Doing, current: usize) -> String {
+    let message = if progress.through_mac {
+        match (progress.moving, progress.direction) {
+            (false, dto::Direction::Download) => key("transfer.progress.mac_copy_reading"),
+            (false, dto::Direction::Upload) => key("transfer.progress.mac_copy_sending"),
+            // (Nothing inside the Mac goes by way of the Mac.)
+            (false, dto::Direction::Local) => key("transfer.progress.mac_copy_copying"),
+            (true, dto::Direction::Download) => key("transfer.progress.mac_move_reading"),
+            (true, dto::Direction::Upload) => key("transfer.progress.mac_move_sending"),
+            (true, dto::Direction::Local) => key("transfer.progress.mac_move_copying"),
+        }
+    } else if progress.moving {
+        key("transfer.progress.moving")
+    } else {
+        match (doing, progress.direction) {
+            (Doing::Import, dto::Direction::Download) => key("transfer.progress.importing"),
+            (Doing::Mirror, dto::Direction::Download | dto::Direction::Upload) => {
+                key("transfer.progress.mirroring")
+            }
+            (Doing::Check, dto::Direction::Download) => key("transfer.progress.checking"),
+            (_, dto::Direction::Download) => key("transfer.progress.downloading"),
+            (_, dto::Direction::Upload) => key("transfer.progress.uploading"),
+            (_, dto::Direction::Local) => key("transfer.progress.copying"),
+        }
+    };
+    tf(
+        message,
+        &[
+            ("current", &format_count(current)),
+            ("total", &format_count(progress.files_total)),
+        ],
+    )
+}
+
+fn progress_response(progress: &dto::TransferProgress, doing: Doing) -> ProgressResponse {
     if progress.removing {
         return removing_response(progress);
     }
     let current = (progress.files_done + 1).min(progress.files_total.max(1));
-    let mut detail = format!(
-        "{} of {}",
-        format_bytes(progress.bytes_done),
-        format_bytes(progress.bytes_total)
-    );
+    let done = format_bytes(progress.bytes_done);
+    let total = format_bytes(progress.bytes_total);
     let seconds = progress.elapsed.as_secs_f64();
-    if seconds >= MIN_SECONDS_FOR_ESTIMATE && progress.bytes_done > 0 {
+    let detail = if seconds >= MIN_SECONDS_FOR_ESTIMATE && progress.bytes_done > 0 {
         let speed = progress.bytes_done as f64 / seconds;
         let left = progress.bytes_total.saturating_sub(progress.bytes_done) as f64 / speed;
-        detail.push_str(&format!(
-            " · {}/s · about {} left",
-            format_bytes(speed as u64),
-            format_duration(left.ceil() as u64)
-        ));
+        tf(
+            "transfer.detail.speed",
+            &[
+                ("done", &done),
+                ("total", &total),
+                ("speed", &format_bytes(speed as u64)),
+                ("left", &format_duration(left.ceil() as u64)),
+            ],
+        )
     } else {
-        detail.push_str(" · estimating time…");
-    }
+        tf(
+            "transfer.detail.estimating",
+            &[("done", &done), ("total", &total)],
+        )
+    };
 
     ProgressResponse {
-        title: if progress.through_mac {
-            format!(
-                "{} via your Mac, {} {} of {}",
-                if progress.moving { "Moving" } else { "Copying" },
-                match progress.direction {
-                    dto::Direction::Download => "reading",
-                    dto::Direction::Upload => "sending",
-                    // (Nothing inside the Mac goes by way of the Mac.)
-                    dto::Direction::Local => "copying",
-                },
-                format_count(current),
-                format_count(progress.files_total)
-            )
-        } else {
-            format!(
-                "{} {} of {}",
-                if progress.moving {
-                    "Moving"
-                } else {
-                    verb_ing(progress.direction)
-                },
-                format_count(current),
-                format_count(progress.files_total)
-            )
-        },
+        title: progress_title(progress, doing, current),
         // All the bytes are in; the phone or the disk is settling the file,
         // which can take a few seconds and must not look like a hang at 100%.
         current_file: if progress.finishing {
-            format!("Finishing {}…", progress.current_file)
+            tf("transfer.finishing", &[("file", &progress.current_file)])
         } else {
             progress.current_file.clone()
         },
@@ -431,7 +464,7 @@ pub fn to_progress_response(progress: &dto::TransferProgress) -> ProgressRespons
         total_fraction: fraction(progress.bytes_done, progress.bytes_total),
         detail,
         note: (progress.bytes_total >= KEEP_UNLOCKED_FROM)
-            .then(|| "Keep your phone unlocked and plugged in until this finishes.".to_owned()),
+            .then(|| t("transfer.note.keep_unlocked").to_owned()),
     }
 }
 
@@ -439,7 +472,10 @@ pub fn to_progress_response(progress: &dto::TransferProgress) -> ProgressRespons
 /// when it is (sleep would drop the phone; the user may mean to walk away).
 pub fn with_awake(note: &str, awake: bool) -> String {
     if awake {
-        format!("{note} Your Mac will stay awake until then.")
+        tf(
+            "text.sentences",
+            &[("first", note), ("second", t("transfer.note.stay_awake"))],
+        )
     } else {
         note.to_owned()
     }
@@ -449,7 +485,7 @@ pub fn with_awake(note: &str, awake: bool) -> String {
 /// link slower than USB 3.
 pub fn with_link(note: String, link: Option<dto::UsbSpeed>) -> String {
     match crate::handler::format::slow_link_note(link) {
-        Some(slow) => format!("{note} {slow}"),
+        Some(slow) => tf("text.sentences", &[("first", &note), ("second", &slow)]),
         None => note,
     }
 }
@@ -458,30 +494,32 @@ pub fn with_link(note: String, link: Option<dto::UsbSpeed>) -> String {
 /// (a move to the phone) from the Mac, into the Trash, one item at a time.
 fn removing_response(progress: &dto::TransferProgress) -> ProgressResponse {
     let fraction = fraction(progress.files_done as u64, progress.files_total as u64);
+    let done = format_count(progress.files_done);
     let (title, current_file, detail) = if progress.trashing {
         (
-            "Moving the originals to the Trash",
-            format!(
-                "{} of {} moved to the Trash",
-                format_count(progress.files_done),
-                items(progress.files_total)
+            t("transfer.removing.trash_title"),
+            tf(
+                "transfer.removing.trash_progress",
+                &[("done", &done), ("items", &items(progress.files_total))],
             ),
             // Which copy was checked, and against what, depends on where it went.
             if progress.direction == dto::Direction::Local {
-                "Each one goes only after its copy has been checked."
+                t("transfer.removing.checked_detail")
             } else {
-                "Each one goes only after its copy has been read back from the phone."
+                t("transfer.removing.trash_detail_phone")
             },
         )
     } else {
         (
-            "Removing the originals from the phone",
-            format!(
-                "{} of {} removed",
-                format_count(progress.files_done),
-                format_count(progress.files_total)
+            t("transfer.removing.phone_title"),
+            tf(
+                "transfer.removing.phone_progress",
+                &[
+                    ("done", &done),
+                    ("total", &format_count(progress.files_total)),
+                ],
             ),
-            "Each one goes only after its copy has been checked.",
+            t("transfer.removing.checked_detail"),
         )
     };
     ProgressResponse {
@@ -495,102 +533,102 @@ fn removing_response(progress: &dto::TransferProgress) -> ProgressResponse {
 }
 
 pub fn to_summary_response(summary: &dto::TransferSummary) -> SummaryResponse {
-    let what = match summary.files {
-        1 => "1 file".to_owned(),
-        n => format!("{n} files"),
-    };
+    summary_response(summary, key("transfer.part.already_there"))
+}
+
+fn summary_response(
+    summary: &dto::TransferSummary,
+    already_there_part: &'static str,
+) -> SummaryResponse {
     let folder = folder_name(&summary.destination);
-    let mut detail = if summary.through_mac {
-        format!("to {folder} on the phone, by way of your Mac")
+    let mut parts = vec![if summary.through_mac {
+        tf("transfer.detail.to_via_mac", &[("folder", &folder)])
     } else {
-        format!("to {folder}")
-    };
+        tf("transfer.detail.to", &[("folder", &folder)])
+    }];
     if summary.skipped > 0 {
-        detail.push_str(&format!(" · {} skipped", summary.skipped));
+        parts.push(count("transfer.part.skipped", summary.skipped, &[]));
     }
     if summary.replaced > 0 {
-        detail.push_str(&format!(" · {} replaced", summary.replaced));
+        parts.push(count("transfer.part.replaced", summary.replaced, &[]));
     }
-    match summary.merged {
-        0 => {}
-        1 => detail.push_str(" · merged into the folder already there"),
-        n => detail.push_str(&format!(
-            " · {n} folders merged into the ones already there"
-        )),
+    if summary.merged > 0 {
+        parts.push(count("transfer.part.merged", summary.merged, &[]));
     }
     if summary.already_there > 0 {
-        detail.push_str(&format!(
-            " · {} already there",
-            format_count(summary.already_there)
-        ));
+        parts.push(count(already_there_part, summary.already_there, &[]));
     }
     if !summary.failures.is_empty() {
-        detail.push_str(&format!(" · {} failed", summary.failures.len()));
+        parts.push(count("transfer.part.failed", summary.failures.len(), &[]));
     }
-    match summary.resumed {
-        0 => {}
-        1 => detail.push_str(" · 1 continued from an earlier attempt"),
-        n => detail.push_str(&format!(" · {n} continued from an earlier attempt")),
+    if summary.resumed > 0 {
+        parts.push(count("transfer.part.resumed", summary.resumed, &[]));
     }
-    match summary.renamed {
-        0 => {}
-        1 => detail.push_str(" · 1 saved under a new name because the name was taken"),
-        n => detail.push_str(&format!(
-            " · {n} saved under new names because the names were taken"
-        )),
+    if summary.renamed > 0 {
+        parts.push(count("transfer.part.renamed", summary.renamed, &[]));
     }
 
     let removal = summary.removal.as_ref();
     // What a move did with the originals, as a tail on the detail line.
     if let Some(removal) = removal {
         if removal.removed > 0 && !removal.left.is_empty() {
-            detail.push_str(&format!(
-                " · {} {}",
-                files(removal.removed),
-                if removal.from_mac {
-                    "moved to the Trash"
-                } else {
-                    "removed from the phone"
-                }
-            ));
+            let part = if removal.from_mac {
+                key("transfer.part.moved_trash")
+            } else {
+                key("transfer.part.removed_phone")
+            };
+            parts.push(tf(part, &[("files", &files(removal.removed))]));
         }
         if !removal.left.is_empty() {
-            detail.push_str(&format!(
-                " · {} left on {}",
-                items(removal.left.len()),
-                where_originals_are(removal)
-            ));
+            let part = if removal.from_mac {
+                key("transfer.part.left_on_mac")
+            } else {
+                key("transfer.part.left_on_phone")
+            };
+            parts.push(tf(part, &[("items", &items(removal.left.len()))]));
         }
     }
+    let detail = joined(parts);
     // A move that left nothing behind has finished moving.
     let moved = removal.is_some_and(|removal| removal.left.is_empty());
 
     // A retry that found everything in place copied nothing, which is good
     // news and should not read as "Downloaded 0 files".
     let title = if summary.files == 0 && !summary.failures.is_empty() {
-        "Nothing was copied".to_owned()
+        t("transfer.summary.nothing_copied").to_owned()
     } else if summary.through_mac
         && summary.files == 0
         && summary.already_there == 0
         && removal.is_none_or(|removal| removal.removed == 0 && removal.left.is_empty())
     {
         // A move into the folder the items are already in.
-        "Already in this folder".to_owned()
+        t("transfer.summary.already_here").to_owned()
     } else if moved && summary.files == 0 && summary.already_there > 0 {
         let removed = removal.map_or(0, |removal| removal.removed);
-        format!("Moved {} (already copied)", files(removed))
+        tf(
+            "transfer.summary.moved_already",
+            &[("files", &files(removed))],
+        )
     } else if summary.files == 0 && summary.already_there > 0 {
-        "Nothing new to copy".to_owned()
+        t("transfer.summary.nothing_new").to_owned()
     } else {
-        let verb = match (summary.direction, removal) {
-            (_, Some(_)) if moved => "Moved",
+        let message = match (summary.direction, removal) {
+            (_, Some(_)) if moved => key("transfer.summary.moved"),
             // Copied, but not all of it moved.
-            (_, Some(_)) => "Copied",
+            (_, Some(_)) => key("transfer.summary.copied"),
             // Inside the phone, nothing was uploaded in the user's eyes.
-            (_, None) if summary.through_mac => "Copied",
-            (direction, None) => verb_ed(direction),
+            (_, None) if summary.through_mac => key("transfer.summary.copied"),
+            (dto::Direction::Download, None) => key("transfer.summary.downloaded"),
+            (dto::Direction::Upload, None) => key("transfer.summary.uploaded"),
+            (dto::Direction::Local, None) => key("transfer.summary.copied"),
         };
-        format!("{verb} {what} ({})", format_bytes(summary.bytes))
+        tf(
+            message,
+            &[
+                ("files", &files(summary.files)),
+                ("size", &format_bytes(summary.bytes)),
+            ],
+        )
     };
 
     SummaryResponse {
@@ -627,44 +665,41 @@ pub fn to_summary_response(summary: &dto::TransferSummary) -> SummaryResponse {
     }
 }
 
-/// The notification for transfers that ended while the user was in another
-/// app: one transfer says how it went in its own words; several are counted,
-/// with how many had problems. `None` when there is nothing to tell.
 /// What the paused transfer says under its bar.
-pub const PAUSED_NOTE: &str =
-    "Resume carries on from where it stopped. Nothing else starts until then.";
+pub fn paused_note() -> &'static str {
+    t("transfer.paused_note")
+}
 
 /// "Paused: Downloading 3 files".
 pub fn paused_title(title: &str) -> String {
-    format!("Paused: {title}")
+    tf("transfer.paused_title", &[("title", title)])
 }
 
 /// Above the transfers not finished last time.
-pub fn offered_title(count: usize) -> String {
-    match count {
-        1 => "1 transfer wasn't finished last time".to_owned(),
-        n => format!("{} transfers weren't finished last time", format_count(n)),
-    }
+pub fn offered_title(number: usize) -> String {
+    count("transfer.offered_title", number, &[])
 }
 
 /// Under them.
-pub const OFFERED_NOTE: &str = "Continue carries on from where they stopped: what arrived is kept, and nothing is copied twice. Nothing runs until you choose.";
+pub fn offered_note() -> &'static str {
+    t("transfer.offered_note")
+}
 
 /// The title of a transfer stopped by losing the phone.
 pub fn waiting_title(title: &str) -> String {
-    format!("Waiting for the phone: {title}")
+    tf("transfer.waiting_title", &[("title", title)])
 }
 
 /// Under a transfer waiting for the phone.
-pub const WAITING_NOTE: &str = "The phone went away or stopped answering. Plug it in, unlock it and choose File transfer (or Reconnect): this carries on from where it stopped. Another phone, or Cancel, ends it.";
+pub fn waiting_note() -> &'static str {
+    t("transfer.waiting_note")
+}
 
 /// The notification when a transfer stops because the phone was lost.
 pub fn phone_lost_note(label: &str) -> (String, String) {
     (
-        "Waiting for your phone".to_owned(),
-        format!(
-            "{label} stopped when the phone went away. Plug it in and unlock it: it carries on by itself."
-        ),
+        t("transfer.phone_lost.title").to_owned(),
+        tf("transfer.phone_lost.body", &[("label", label)]),
     )
 }
 
@@ -679,12 +714,16 @@ pub fn is_troubled(outcome: &Result<SummaryResponse, error::ErrorResponse>) -> b
     }
 }
 
+/// The notification for transfers that ended while the user was in another
+/// app: one transfer says how it went in its own words; several are counted,
+/// with how many had problems. `None` when there is nothing to tell.
 pub fn batch_note(
     batch: &[(String, &Result<SummaryResponse, error::ErrorResponse>)],
 ) -> Option<(String, String)> {
+    let stopped = |label: &str| tf("transfer.batch.stopped", &[("label", label)]);
     match batch {
         [] => None,
-        [(label, Err(error))] => Some((format!("{label}: stopped"), error.title.clone())),
+        [(label, Err(error))] => Some((stopped(label), error.title.clone())),
         [(_, Ok(summary))] => {
             let body = match &summary.arrival {
                 Some(arrival) if !is_troubled(&Ok(summary.clone())) => arrival.clone(),
@@ -698,16 +737,22 @@ pub fn batch_note(
                 .filter(|(_, outcome)| is_troubled(outcome))
                 .count();
             let title = match problems {
-                0 => format!("{} transfers finished", several.len()),
-                1 => format!("{} transfers finished, 1 with a problem", several.len()),
-                n => format!("{} transfers finished, {n} with problems", several.len()),
+                0 => count("transfer.batch.title", several.len(), &[]),
+                1 => count("transfer.batch.one_problem", several.len(), &[]),
+                n => tf(
+                    "transfer.batch.problems",
+                    &[
+                        ("count", &format_count(several.len())),
+                        ("problems", &format_count(n)),
+                    ],
+                ),
             };
             let body = several
                 .iter()
                 .take(3)
                 .map(|(label, outcome)| match outcome {
                     Ok(summary) => summary.title.clone(),
-                    Err(_) => format!("{label}: stopped"),
+                    Err(_) => stopped(label),
                 })
                 .collect::<Vec<_>>()
                 .join(" · ");
@@ -719,44 +764,46 @@ pub fn batch_note(
 /// The notification for an upload waiting on the question about names that
 /// are taken.
 pub fn question_note(taken: usize) -> (String, String) {
-    let body = match taken {
-        1 => "A name is already taken on the phone: choose what to do with it.".to_owned(),
-        n => format!(
-            "{} names are already taken on the phone: choose what to do with them.",
-            format_count(n)
-        ),
-    };
-    ("Waiting for you".to_owned(), body)
+    (
+        t("transfer.question.title").to_owned(),
+        count("transfer.question.body", taken, &[]),
+    )
 }
 
 /// What the count at the end says: everything meant to arrive is there (and
 /// was checked, or the phone took each one), or how much of it is. Nothing
 /// when there were no files.
 pub fn arrival_line(arrival: &dto::Arrival) -> Option<String> {
-    let files = |n: usize| match n {
-        1 => "1 file".to_owned(),
-        n => format!("{} files", format_count(n)),
-    };
     if arrival.files == 0 {
         return None;
     }
     if arrival.there < arrival.files {
-        return Some(format!(
-            "{} of {} arrived",
-            format_count(arrival.there),
-            files(arrival.files)
+        return Some(tf(
+            "transfer.arrival.partial",
+            &[
+                ("there", &format_count(arrival.there)),
+                ("files", &files(arrival.files)),
+            ],
         ));
     }
-    let what = format!("{}, {}", files(arrival.files), format_bytes(arrival.bytes));
+    let what = tf(
+        "transfer.arrival.what",
+        &[
+            ("files", &files(arrival.files)),
+            ("size", &format_bytes(arrival.bytes)),
+        ],
+    );
+    let say = |message| tf(message, &[("what", &what)]);
     Some(match arrival.checked {
-        _ if !arrival.complete => format!(
-            "{what} — all that could be seen; a folder listed inside itself was not gone into"
-        ),
-        None => format!("{what} — all sent, and the phone took each one"),
-        Some(checked) if checked >= arrival.there => format!("{what} — all arrived"),
-        Some(checked) => format!(
-            "{what} — all there; {} could not be checked (no size to compare)",
-            format_count(arrival.there - checked)
+        _ if !arrival.complete => say(key("transfer.arrival.cycle")),
+        None => say(key("transfer.arrival.sent")),
+        Some(checked) if checked >= arrival.there => say(key("transfer.arrival.arrived")),
+        Some(checked) => tf(
+            "transfer.arrival.unchecked",
+            &[
+                ("what", &what),
+                ("count", &format_count(arrival.there - checked)),
+            ],
         ),
     })
 }
@@ -764,9 +811,9 @@ pub fn arrival_line(arrival: &dto::Arrival) -> Option<String> {
 /// Where a move's originals were, for the person who moved them.
 fn where_originals_are(removal: &dto::Removal) -> &'static str {
     if removal.from_mac {
-        "your Mac"
+        t("transfer.removal.mac")
     } else {
-        "the phone"
+        t("transfer.removal.phone")
     }
 }
 
@@ -778,22 +825,40 @@ fn removal_notes(removal: &dto::Removal) -> Vec<String> {
         .kept
         .iter()
         .take(MAX_FAILURES_SHOWN)
-        .map(|kept| format!("{} — stayed on {place}: {}", kept.label, why(&kept.why)))
+        .map(|kept| {
+            tf(
+                "transfer.removal.kept_line",
+                &[
+                    ("label", &kept.label),
+                    ("place", place),
+                    ("why", &why(&kept.why)),
+                ],
+            )
+        })
         .collect();
     if removal.kept.len() > MAX_FAILURES_SHOWN {
-        lines.push(format!(
-            "and {} more stayed on {place}",
-            removal.kept.len() - MAX_FAILURES_SHOWN
+        lines.push(tf(
+            "transfer.removal.more",
+            &[
+                (
+                    "count",
+                    &format_count(removal.kept.len() - MAX_FAILURES_SHOWN),
+                ),
+                ("place", place),
+            ],
         ));
     }
     match &removal.stopped {
         None => {}
-        Some(dto::Error::Cancelled) => lines.push(format!(
-            "Removing stopped when you cancelled; the rest stayed on {place}."
-        )),
-        Some(error) => lines.push(format!(
-            "Removing stopped: {}. The rest stayed on {place}.",
-            error::to_error_response(error.clone()).title
+        Some(dto::Error::Cancelled) => {
+            lines.push(tf("transfer.removal.cancelled", &[("place", place)]));
+        }
+        Some(stopped) => lines.push(tf(
+            "transfer.removal.stopped",
+            &[
+                ("reason", &error::describe_again(stopped).title),
+                ("place", place),
+            ],
         )),
     }
     lines
@@ -813,11 +878,16 @@ pub fn timing_line(summary: &dto::TransferSummary, link: Option<dto::UsbSpeed>) 
     if secs < 1.0 {
         return None;
     }
-    let mut line = format!("Took {}", format_elapsed(summary.elapsed.as_secs()));
+    let elapsed = format_elapsed(summary.elapsed.as_secs());
     let rate = (summary.bytes as f64 / secs) as u64;
-    if summary.bytes > 0 {
-        line.push_str(&format!(" · {}/s on average", format_bytes(rate)));
-    }
+    let mut line = if summary.bytes > 0 {
+        tf(
+            "transfer.timing.rate",
+            &[("elapsed", &elapsed), ("rate", &format_bytes(rate))],
+        )
+    } else {
+        tf("transfer.timing.took", &[("elapsed", &elapsed)])
+    };
     let over_usb = matches!(
         summary.direction,
         dto::Direction::Download | dto::Direction::Upload
@@ -828,7 +898,10 @@ pub fn timing_line(summary: &dto::TransferSummary, link: Option<dto::UsbSpeed>) 
         && rate <= SLOW_AVERAGE
         && let Some(slow) = crate::handler::format::slow_link_note(link)
     {
-        line = format!("{line}. {slow}");
+        line = tf(
+            "transfer.timing.with_slow",
+            &[("line", &line), ("slow", &slow)],
+        );
     }
     Some(line)
 }
@@ -839,57 +912,75 @@ pub fn report_rows(report: &[dto::FileReport]) -> Vec<ReportRow> {
     report
         .iter()
         .map(|file| {
-            let checked = |checked: bool, done: &str| {
-                if checked {
-                    format!("{done} and checked")
-                } else {
-                    format!("{done}; the phone gave no size to check it by")
-                }
-            };
             let (mark, mut what) = match &file.outcome {
-                dto::FileOutcome::Copied { checked: is } => ("✓", checked(*is, "Copied")),
-                dto::FileOutcome::Resumed { checked: is } => {
-                    ("✓", checked(*is, "Finished from an earlier try"))
-                }
-                dto::FileOutcome::Sent => ("✓", "Sent; the phone took it".to_owned()),
-                dto::FileOutcome::AlreadyThere => ("=", "Already there".to_owned()),
-                dto::FileOutcome::Replaced => {
-                    ("↻", "Replaced; the old one is in the Trash".to_owned())
-                }
-                dto::FileOutcome::ReplacedOnPhone => {
-                    ("↻", "Replaced; the phone deleted its old one".to_owned())
-                }
-                dto::FileOutcome::Skipped => ("–", "Skipped: the name was taken".to_owned()),
-                dto::FileOutcome::Failed(error) => (
-                    "✕",
-                    format!("Failed: {}", error::to_error_response(error.clone()).title),
+                dto::FileOutcome::Copied { checked } => (
+                    "✓",
+                    t(if *checked {
+                        key("transfer.report.copied")
+                    } else {
+                        key("transfer.report.copied_unchecked")
+                    })
+                    .to_owned(),
                 ),
-                dto::FileOutcome::NotCopied => ("✕", "Not copied".to_owned()),
-                dto::FileOutcome::Identical => ("✓", "Identical".to_owned()),
+                dto::FileOutcome::Resumed { checked } => (
+                    "✓",
+                    t(if *checked {
+                        key("transfer.report.resumed")
+                    } else {
+                        key("transfer.report.resumed_unchecked")
+                    })
+                    .to_owned(),
+                ),
+                dto::FileOutcome::Sent => ("✓", t("transfer.report.sent").to_owned()),
+                dto::FileOutcome::AlreadyThere => {
+                    ("=", t("transfer.report.already_there").to_owned())
+                }
+                dto::FileOutcome::Replaced => ("↻", t("transfer.report.replaced").to_owned()),
+                dto::FileOutcome::ReplacedOnPhone => {
+                    ("↻", t("transfer.report.replaced_phone").to_owned())
+                }
+                dto::FileOutcome::Skipped => ("–", t("transfer.report.skipped").to_owned()),
+                dto::FileOutcome::Failed(failure) => (
+                    "✕",
+                    tf(
+                        "transfer.report.failed",
+                        &[("reason", &error::describe_again(failure).title)],
+                    ),
+                ),
+                dto::FileOutcome::NotCopied => ("✕", t("transfer.report.not_copied").to_owned()),
+                dto::FileOutcome::Identical => ("✓", t("transfer.report.identical").to_owned()),
                 // Counted from 1 when shown, as `cmp` says it.
                 dto::FileOutcome::Differs { at } => (
                     "≠",
-                    format!("Differs at byte {}", format_number(at.saturating_add(1))),
+                    tf(
+                        "transfer.report.differs",
+                        &[("at", &format_number(at.saturating_add(1)))],
+                    ),
                 ),
                 dto::FileOutcome::SizesDiffer { phone, mac } => (
                     "≠",
-                    format!(
-                        "Sizes differ: {} on the phone, {} on the Mac",
-                        format_bytes(*phone),
-                        format_bytes(*mac)
+                    tf(
+                        "transfer.report.sizes_differ",
+                        &[
+                            ("phone", &format_bytes(*phone)),
+                            ("mac", &format_bytes(*mac)),
+                        ],
                     ),
                 ),
-                dto::FileOutcome::NotOnMac => ("?", "Not on the Mac".to_owned()),
-                dto::FileOutcome::NotOnPhone => ("?", "Not on the phone".to_owned()),
+                dto::FileOutcome::NotOnMac => ("?", t("transfer.report.not_on_mac").to_owned()),
+                dto::FileOutcome::NotOnPhone => ("?", t("transfer.report.not_on_phone").to_owned()),
             };
             if let Some(from) = &file.from {
-                what.push_str(&format!(" · was “{from}”"));
+                what = tf("transfer.report.was", &[("what", &what), ("from", from)]);
             }
             let original = match &file.original {
                 None => String::new(),
-                Some(dto::Original::Removed) => "Original removed".to_owned(),
-                Some(dto::Original::Kept(reason)) => format!("Original kept: {}", why(reason)),
-                Some(dto::Original::Stayed) => "Original kept".to_owned(),
+                Some(dto::Original::Removed) => t("transfer.report.original_removed").to_owned(),
+                Some(dto::Original::Kept(reason)) => tf(
+                    "transfer.report.original_kept_why",
+                    &[("why", &why(reason))],
+                ),
+                Some(dto::Original::Stayed) => t("transfer.report.original_kept").to_owned(),
             };
             ReportRow {
                 mark,
@@ -905,13 +996,32 @@ pub fn report_rows(report: &[dto::FileReport]) -> Vec<ReportRow> {
 pub fn report_title(title: &str, listed: usize, left_out: usize) -> String {
     // A title that has a colon of its own ("Checked 5 files: 2 differ")
     // would read oddly with a second one.
-    let mark = if title.contains(':') { " ·" } else { ":" };
-    match left_out {
-        0 => format!("{title}{mark} {}", items(listed)),
-        n => format!(
-            "{title}{mark} the first {} ({} more not listed)",
-            items(listed),
-            format_count(n)
+    let has_colon = title.contains([':', '：']);
+    let listed_items = items(listed);
+    match (has_colon, left_out) {
+        (false, 0) => tf(
+            "transfer.report.title",
+            &[("title", title), ("items", &listed_items)],
+        ),
+        (true, 0) => tf(
+            "transfer.report.title_alt",
+            &[("title", title), ("items", &listed_items)],
+        ),
+        (false, n) => tf(
+            "transfer.report.title_part",
+            &[
+                ("title", title),
+                ("items", &listed_items),
+                ("count", &format_count(n)),
+            ],
+        ),
+        (true, n) => tf(
+            "transfer.report.title_alt_part",
+            &[
+                ("title", title),
+                ("items", &listed_items),
+                ("count", &format_count(n)),
+            ],
         ),
     }
 }
@@ -927,15 +1037,15 @@ pub fn saved_note(path: &str) -> String {
         .parent()
         .map(|folder| folder_name(&folder.to_string_lossy()))
         .unwrap_or_default();
-    format!("Saved “{name}” in “{folder}”")
+    tf(
+        "transfer.report.saved",
+        &[("name", &name), ("folder", &folder)],
+    )
 }
 
 /// After the report was put on the clipboard.
 pub fn copied_note(lines: usize) -> String {
-    format!(
-        "Copied the report ({}): paste it into a spreadsheet or a note",
-        items(lines)
-    )
+    tf("transfer.report.copied_note", &[("items", &items(lines))])
 }
 
 /// One cell of the report's text: odd characters written out, and a cell a
@@ -955,7 +1065,13 @@ fn cell(text: &str) -> String {
 /// are anyone's), so odd characters are written out and each file stays on
 /// its line.
 pub fn report_tsv(rows: &[ReportRow], left_out: usize) -> String {
-    let mut text = String::from("File\tWhat happened\tOriginal\n");
+    let mut text = [
+        t("transfer.report.column_file"),
+        t("transfer.report.column_what"),
+        t("transfer.report.column_original"),
+    ]
+    .join("\t");
+    text.push('\n');
     for row in rows {
         text.push_str(&format!(
             "{}\t{}\t{}\n",
@@ -965,7 +1081,8 @@ pub fn report_tsv(rows: &[ReportRow], left_out: usize) -> String {
         ));
     }
     if left_out > 0 {
-        text.push_str(&format!("({} more not listed)\n", format_count(left_out)));
+        text.push_str(&count("transfer.report.more_not_listed", left_out, &[]));
+        text.push('\n');
     }
     text
 }
@@ -973,11 +1090,11 @@ pub fn report_tsv(rows: &[ReportRow], left_out: usize) -> String {
 /// Why an original was not removed, in words for the person who moved it.
 fn why(why: &dto::Why) -> String {
     match why {
-        dto::Why::Unchecked => "its copy couldn't be checked".to_owned(),
-        dto::Why::Changed => "it changed after it was copied".to_owned(),
-        dto::Why::NotEmpty => "it still holds other files".to_owned(),
-        dto::Why::Refused(error) => error::to_error_response(error.clone()).title,
-        dto::Why::NotCopied => "it can't be copied".to_owned(),
+        dto::Why::Unchecked => t("transfer.why.unchecked").to_owned(),
+        dto::Why::Changed => t("transfer.why.changed").to_owned(),
+        dto::Why::NotEmpty => t("transfer.why.not_empty").to_owned(),
+        dto::Why::Refused(error) => error::describe_again(error).title,
+        dto::Why::NotCopied => t("transfer.why.not_copied").to_owned(),
     }
 }
 
@@ -986,18 +1103,12 @@ fn format_number(number: u64) -> String {
     usize::try_from(number).map_or_else(|_| number.to_string(), format_count)
 }
 
-fn files(count: usize) -> String {
-    match count {
-        1 => "1 file".to_owned(),
-        n => format!("{} files", format_count(n)),
-    }
+fn files(number: usize) -> String {
+    count("text.files", number, &[])
 }
 
-fn items(count: usize) -> String {
-    match count {
-        1 => "1 item".to_owned(),
-        n => format!("{} items", format_count(n)),
-    }
+fn items(number: usize) -> String {
+    count("text.items", number, &[])
 }
 
 /// One line per failure, "IMG_1.jpg — Your phone stopped responding", the first
@@ -1007,12 +1118,21 @@ fn failure_lines(failures: &[dto::FileFailure]) -> Vec<String> {
         .iter()
         .take(MAX_FAILURES_SHOWN)
         .map(|failure| {
-            let reason = error::to_error_response(failure.error.clone());
-            format!("{} — {}", failure.label, reason.title)
+            tf(
+                "transfer.failure.line",
+                &[
+                    ("label", &failure.label),
+                    ("reason", &error::describe_again(&failure.error).title),
+                ],
+            )
         })
         .collect();
     if failures.len() > MAX_FAILURES_SHOWN {
-        lines.push(format!("and {} more", failures.len() - MAX_FAILURES_SHOWN));
+        lines.push(count(
+            "explorer.paste.more",
+            failures.len() - MAX_FAILURES_SHOWN,
+            &[],
+        ));
     }
     lines
 }
@@ -1025,71 +1145,62 @@ pub fn job_label(
     names: &[String],
     destination: &str,
 ) -> String {
-    let what = match names {
-        [one] => format!(
-            "“{}”",
-            Path::new(one)
+    let folder = folder_name(destination);
+    let message = match (direction, moving, names.len() == 1) {
+        (_, true, true) => key("transfer.label.move_one"),
+        (_, true, false) => key("transfer.label.move_many"),
+        (dto::Direction::Download, false, true) => key("transfer.label.download_one"),
+        (dto::Direction::Download, false, false) => key("transfer.label.download_many"),
+        (dto::Direction::Upload, false, true) => key("transfer.label.upload_one"),
+        (dto::Direction::Upload, false, false) => key("transfer.label.upload_many"),
+        (dto::Direction::Local, false, true) => key("transfer.label.copy_one"),
+        (dto::Direction::Local, false, false) => key("transfer.label.copy_many"),
+    };
+    match names {
+        [one] => {
+            let name = Path::new(one)
                 .file_name()
-                .map_or_else(|| one.clone(), |n| n.to_string_lossy().into_owned())
+                .map_or_else(|| one.clone(), |n| n.to_string_lossy().into_owned());
+            tf(message, &[("name", &name), ("folder", &folder)])
+        }
+        many => tf(
+            message,
+            &[("items", &items(many.len())), ("folder", &folder)],
         ),
-        many => format!("{} items", many.len()),
-    };
-    let verb = match (direction, moving) {
-        (_, true) => "Move",
-        (dto::Direction::Download, false) => "Download",
-        (dto::Direction::Upload, false) => "Upload",
-        (dto::Direction::Local, false) => "Copy",
-    };
-    format!("{verb} {what} to {}", folder_name(destination))
+    }
 }
 
 /// "Copy “IMG_001.jpg” to Camera via your Mac", "Move 3 items to Camera via your Mac".
 pub fn on_phone_label(mode: dto::Paste, names: &[String], destination: &str) -> String {
-    let what = match names {
-        [one] => format!("“{one}”"),
-        many => format!("{} items", many.len()),
+    let folder = folder_name(destination);
+    let message = match (mode, names.len() == 1) {
+        (dto::Paste::Copy, true) => key("transfer.label.mac_copy_one"),
+        (dto::Paste::Copy, false) => key("transfer.label.mac_copy_many"),
+        (dto::Paste::Move, true) => key("transfer.label.mac_move_one"),
+        (dto::Paste::Move, false) => key("transfer.label.mac_move_many"),
     };
-    let verb = match mode {
-        dto::Paste::Copy => "Copy",
-        dto::Paste::Move => "Move",
-    };
-    format!("{verb} {what} to {} via your Mac", folder_name(destination))
+    match names {
+        [one] => tf(message, &[("name", one), ("folder", &folder)]),
+        many => tf(
+            message,
+            &[("items", &items(many.len())), ("folder", &folder)],
+        ),
+    }
 }
 
 /// "“notes.txt” already exists on the phone" or "3 items already exist on the phone".
 pub fn conflict_title(existing: &[String], on_mac: bool) -> String {
-    let place = if on_mac {
-        "on your Mac"
-    } else {
-        "on the phone"
-    };
-    match existing {
-        [one] => format!("“{one}” already exists {place}"),
-        many => format!("{} items already exist {place}", many.len()),
-    }
-}
-
-fn noun(direction: dto::Direction) -> &'static str {
-    match direction {
-        dto::Direction::Download => "download",
-        dto::Direction::Upload => "upload",
-        dto::Direction::Local => "copy",
-    }
-}
-
-fn verb_ing(direction: dto::Direction) -> &'static str {
-    match direction {
-        dto::Direction::Download => "Downloading",
-        dto::Direction::Upload => "Uploading",
-        dto::Direction::Local => "Copying",
-    }
-}
-
-fn verb_ed(direction: dto::Direction) -> &'static str {
-    match direction {
-        dto::Direction::Download => "Downloaded",
-        dto::Direction::Upload => "Uploaded",
-        dto::Direction::Local => "Copied",
+    match (existing, on_mac) {
+        ([one], true) => tf("transfer.conflict.one_mac", &[("name", one)]),
+        ([one], false) => tf("transfer.conflict.one_phone", &[("name", one)]),
+        (many, true) => tf(
+            "transfer.conflict.many_mac",
+            &[("count", &many.len().to_string())],
+        ),
+        (many, false) => tf(
+            "transfer.conflict.many_phone",
+            &[("count", &many.len().to_string())],
+        ),
     }
 }
 
@@ -1097,7 +1208,7 @@ fn verb_ed(direction: dto::Direction) -> &'static str {
 fn folder_name(path: &str) -> String {
     match Path::new(path).file_name() {
         Some(name) => name.to_string_lossy().into_owned(),
-        None => "the top folder".to_owned(),
+        None => t("explorer.top_folder").to_owned(),
     }
 }
 
@@ -1221,8 +1332,8 @@ mod tests {
             "{}",
             progress.title
         );
-        assert_eq!(progress.note.as_deref(), Some(CHECK_NOTE));
-        assert_eq!(preparing_check().note.as_deref(), Some(CHECK_NOTE));
+        assert_eq!(progress.note.as_deref(), Some(check_note()));
+        assert_eq!(preparing_check().note.as_deref(), Some(check_note()));
     }
     #[test]
     fn the_finished_line_says_how_long_and_how_fast_from_what_was_copied() {
@@ -1627,6 +1738,7 @@ mod tests {
             device_lost: true,
             privacy: None,
             cancelled: false,
+            source: dto::Error::Disconnected,
         });
         let label = |n: &str| n.to_owned();
 
@@ -2930,5 +3042,51 @@ mod tests {
             remove_extras: false,
         };
         assert_eq!(mirror_label(&request), "Mirror Camera onto the Mac");
+    }
+
+    #[test]
+    fn a_name_from_the_phone_or_the_mac_is_shown_exactly_in_every_language() {
+        let odd_names = ["รูปทริป", "写真.jpg", "{x} {{y}}", "{count} {{", "}"];
+
+        for language in dto::Language::ALL {
+            crate::i18n::with_language(language, || {
+                for name in odd_names {
+                    let names = vec![name.to_string()];
+                    let folder = format!("/Users/me/{name}");
+                    let messages = [
+                        job_label(
+                            dto::Direction::Download,
+                            false,
+                            &[format!("/DCIM/{name}")],
+                            &folder,
+                        ),
+                        job_label(
+                            dto::Direction::Upload,
+                            true,
+                            std::slice::from_ref(&folder),
+                            &folder,
+                        ),
+                        on_phone_label(dto::Paste::Copy, &names, &folder),
+                        conflict_title(&names, true),
+                        conflict_title(&names, false),
+                        delete_keeping_label(&names),
+                        send_edit_label(name),
+                        edit_saved_title(name),
+                        edit_open_title(name),
+                        import_label(&folder),
+                        paused_title(name),
+                        waiting_title(name),
+                        saved_note(&format!("{folder}/report.tsv")),
+                        to_edit_summary(&dto::TransferSummary::default(), name).title,
+                    ];
+                    for message in messages {
+                        assert!(
+                            message.contains(name),
+                            "{language:?}: {message:?} should show {name:?} exactly"
+                        );
+                    }
+                }
+            });
+        }
     }
 }

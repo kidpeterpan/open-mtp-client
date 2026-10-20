@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Datelike, Local, Timelike};
 
-use crate::dto::{Entry, Error, Timestamp};
+use crate::dto::{Disk, Entry, Error, Timestamp};
 
 pub fn to_entry(name: String, metadata: &Metadata) -> Entry {
     let is_folder = metadata.is_dir();
@@ -36,8 +36,8 @@ pub fn to_error(err: &io::Error, path: &str) -> Error {
         }
         io::ErrorKind::PermissionDenied => Error::FolderAccessDenied(path.to_owned()),
         io::ErrorKind::StorageFull => Error::MacDiskFull,
-        io::ErrorKind::ReadOnlyFilesystem => Error::VolumeReadOnly(format!("in “{path}”")),
-        io::ErrorKind::FileTooLarge => Error::TooBigForVolume(format!("in “{path}”")),
+        io::ErrorKind::ReadOnlyFilesystem => Error::VolumeReadOnly(Disk::Folder(path.to_owned())),
+        io::ErrorKind::FileTooLarge => Error::TooBigForVolume(Disk::Folder(path.to_owned())),
         io::ErrorKind::AlreadyExists => {
             Error::NameTaken(path.rsplit('/').next().unwrap_or(path).to_owned())
         }
@@ -58,21 +58,21 @@ mod tests {
         let read_only = io::Error::from(io::ErrorKind::ReadOnlyFilesystem);
         assert_eq!(
             to_error(&read_only, "/Volumes/BACKUP/a.jpg"),
-            Error::VolumeReadOnly("in “/Volumes/BACKUP/a.jpg”".into())
+            Error::VolumeReadOnly(Disk::Folder("/Volumes/BACKUP/a.jpg".into()))
         );
         let too_big = io::Error::from(io::ErrorKind::FileTooLarge);
         assert_eq!(
             to_error(&too_big, "/Volumes/KINGSTON/v.mp4"),
-            Error::TooBigForVolume("in “/Volumes/KINGSTON/v.mp4”".into())
+            Error::TooBigForVolume(Disk::Folder("/Volumes/KINGSTON/v.mp4".into()))
         );
         assert_eq!(
             to_error(&io::Error::from_raw_os_error(libc::EROFS), "/x"),
-            Error::VolumeReadOnly("in “/x”".into()),
+            Error::VolumeReadOnly(Disk::Folder("/x".into())),
             "the code macOS gives"
         );
         assert_eq!(
             to_error(&io::Error::from_raw_os_error(libc::EFBIG), "/x"),
-            Error::TooBigForVolume("in “/x”".into())
+            Error::TooBigForVolume(Disk::Folder("/x".into()))
         );
     }
 

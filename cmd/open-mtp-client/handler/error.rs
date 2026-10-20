@@ -11,6 +11,8 @@ use std::collections::VecDeque;
 use chrono::{DateTime, Local};
 use internal::dto;
 
+use crate::i18n::{english, key, t, tf};
+
 #[derive(Debug, Clone)]
 pub struct ErrorResponse {
     pub title: String,
@@ -21,6 +23,13 @@ pub struct ErrorResponse {
     pub privacy: Option<dto::PrivacyPane>,
     /// The user stopped it (`dto::Error::Cancelled`).
     pub cancelled: bool,
+    pub source: dto::Error,
+}
+
+impl ErrorResponse {
+    pub fn reworded(&self) -> ErrorResponse {
+        describe_again(&self.source)
+    }
 }
 
 /// Which System Settings pane lets the app into `path`: Desktop, Documents,
@@ -36,180 +45,152 @@ pub fn privacy_pane(path: &str) -> dto::PrivacyPane {
     }
 }
 
-/// Turns a failure into what the user sees: a short title plus one concrete
-/// next step they can take.
 pub fn to_error_response(err: dto::Error) -> ErrorResponse {
-    // A phone that stopped answering is as good as gone: its session can't be
-    // trusted, and reconnecting opens a fresh one.
+    note_shown(&err);
+    describe_again(&err)
+}
+
+pub fn english_title(err: &dto::Error) -> &'static str {
+    english(title_key(err))
+}
+
+pub fn note_shown(err: &dto::Error) {
+    if !matches!(err, dto::Error::Cancelled) {
+        note(english(title_key(err)), Local::now());
+    }
+}
+
+pub fn describe_again(err: &dto::Error) -> ErrorResponse {
     let device_lost = matches!(
         err,
         dto::Error::Disconnected | dto::Error::NotConnected | dto::Error::Timeout
     );
-    // The user stopped it: not a problem.
     let cancelled = matches!(err, dto::Error::Cancelled);
-    let worth_noting = !cancelled;
-    let privacy = match &err {
+    let privacy = match err {
         dto::Error::FolderAccessDenied(path) => Some(privacy_pane(path)),
         _ => None,
     };
-    let (title, hint) = match err {
-        dto::Error::NoDevice => (
-            "No device found",
-            "Plug your phone in with a USB cable that carries data (some are charge-only), unlock it, then try again.".to_owned(),
-        ),
-        dto::Error::MultipleDevices => (
-            "Several phones are plugged in",
-            "Pick the one to open from the list.".to_owned(),
-        ),
-        dto::Error::PhoneUnplugged => (
-            "That phone is no longer plugged in",
-            "Plug it in again, or pick another phone from the list.".to_owned(),
-        ),
-        dto::Error::DeviceInUse => (
-            "Another app is using your phone",
-            "Quit apps that talk to phones, such as Image Capture or Photos, then try again.".to_owned(),
-        ),
-        dto::Error::AndroidFileTransferRunning => (
-            "Android File Transfer is in the way",
-            "Quit Android File Transfer, including “Android File Transfer Agent” in Activity Monitor, then try again.".to_owned(),
-        ),
-        dto::Error::AllowStorageAccess => (
-            "Allow access on your phone",
-            "Unlock your phone, tap the USB notification and choose “File transfer”. If it asks to allow access to phone data, tap Allow.".to_owned(),
-        ),
-        dto::Error::PermissionDenied => (
-            "macOS blocked access to the device",
-            "Unplug the phone and plug it back in. If this keeps happening, restart your Mac.".to_owned(),
-        ),
-        dto::Error::Disconnected => (
-            "Your phone was disconnected",
-            "Check the cable, plug the phone back in and keep it unlocked while it's connected.".to_owned(),
-        ),
-        dto::Error::Timeout => (
-            "Your phone stopped responding",
-            "Unlock the phone and keep the screen on, then press Reconnect. If that doesn't help, unplug it and plug it back in.".to_owned(),
-        ),
-        dto::Error::NotConnected => (
-            "No device connected",
-            "Connect your phone, then press Try again.".to_owned(),
-        ),
-        dto::Error::PathNotFound(path) => (
-            "This folder is gone",
-            format!("{path} was moved or deleted on the phone. Pick another folder from the path above."),
-        ),
-        dto::Error::FolderAccessDenied(path) => (
-            "open-mtp-client can't open this folder",
-            format!(
-                "macOS hasn't given open-mtp-client access to {path}. Allow it in System Settings › Privacy & Security › {}; the folder opens when you come back.",
-                match privacy_pane(&path) {
-                    dto::PrivacyPane::FilesAndFolders => "Files and Folders",
-                    dto::PrivacyPane::FullDiskAccess => "Full Disk Access",
-                }
-            ),
-        ),
-        dto::Error::InvalidName(dto::NameProblem::Empty) => (
-            "Enter a name",
-            "Type a name, then press Return.".to_owned(),
-        ),
-        dto::Error::InvalidName(dto::NameProblem::IllegalCharacters) => (
-            "That name has characters phones can't use",
-            "Remove any of / \\ ? * : | \" < > from the name.".to_owned(),
-        ),
-        dto::Error::InvalidName(dto::NameProblem::Reserved) => (
-            "“.” and “..” are reserved",
-            "Choose a different name.".to_owned(),
-        ),
-        dto::Error::NameTaken(name) => (
-            "That name is taken",
-            format!("“{name}” already exists here. Choose a different name."),
-        ),
-        dto::Error::ReadOnly => (
-            "This storage is read-only",
-            "Files here can be copied but not changed. Pick another storage to make changes.".to_owned(),
-        ),
-        dto::Error::Unsupported => (
-            "Your phone can't do this over USB",
-            "Do it on the phone itself, then press Refresh.".to_owned(),
-        ),
-        dto::Error::IntoItself(name) => (
-            "A folder can't go inside itself",
-            format!("“{name}” can't be copied or moved into itself or into a folder inside it. Pick a different folder."),
-        ),
-        dto::Error::Cancelled => (
-            "Cancelled",
-            "Files that finished are kept. Retry carries on with the rest, skipping what is already there.".to_owned(),
-        ),
-        dto::Error::UnsafeName(name) => (
-            "Copy stopped for safety",
-            format!("The phone reported a file named “{name}”, which could write outside the folder you chose. Nothing was copied."),
-        ),
-        dto::Error::Crashed => (
-            "Something went wrong inside the app",
-            "What it was doing was stopped, and the app is still running. A crash report was saved on this Mac, and the banner below the panes can open it. Try again; if it keeps happening, send the report.".to_owned(),
-        ),
-        dto::Error::NotEditable => (
-            "Only a file can be edited on the Mac",
-            "Pick one file of up to 1 GB whose size the phone gives.".to_owned(),
-        ),
-        dto::Error::OtherPhone => (
-            "This is for another phone",
-            "Connect the phone it came from, then send it again. Nothing was sent.".to_owned(),
-        ),
-        dto::Error::TooManyEdits => (
-            "20 files are being edited already",
-            "Send or discard one of them in the transfers below, then try again.".to_owned(),
-        ),
-        dto::Error::TransferTooLarge => (
-            "Too much to copy at once",
-            "The selection is nested too deeply or holds too many items. Copy its folders one at a time.".to_owned(),
-        ),
-        dto::Error::MacDiskFull => (
-            "Your Mac's disk is full",
-            "Free up some space, then try again.".to_owned(),
-        ),
-        dto::Error::NotEnoughRoom {
-            needed,
-            free,
-            place,
-        } => (
-            "Not enough room",
-            format!(
-                "Needs {}; {} is free {place}. Nothing was copied: make room, or choose fewer items.",
-                crate::handler::format::format_bytes(needed),
-                crate::handler::format::format_bytes(free),
-            ),
-        ),
-        dto::Error::VolumeReadOnly(place) => (
-            "That disk is read-only",
-            format!("Nothing can be written {place}. A Mac only reads NTFS drives, and a locked SD card or a read-only disk image can't be written either. Nothing was copied: choose a folder on another disk."),
-        ),
-        dto::Error::TooBigForVolume(place) => (
-            "4 GB or more: too big for a FAT32 disk",
-            format!("Files of 4 GB or more can't be saved {place}: it is formatted FAT32 (MS-DOS). The rest were copied. Use a disk formatted APFS or exFAT for these."),
-        ),
-        dto::Error::ChangedSince(name) => (
-            "Can't undo: it has changed since",
-            format!("“{name}” isn't as the last change left it, so nothing was undone."),
-        ),
-        dto::Error::PartlyUndone(name) => (
-            "Undid the rename, but not all of it",
-            format!("“{name}” isn't as the rename left it, so it keeps its new name; the others have their old names back."),
-        ),
-        dto::Error::General(detail) => (
-            "Something went wrong talking to your phone",
-            format!("Unplug the phone and plug it back in, then try again. Details: {detail}"),
-        ),
-    };
-
-    if worth_noting {
-        note(title, Local::now());
-    }
     ErrorResponse {
-        title: title.to_owned(),
-        hint,
+        title: t(title_key(err)).to_owned(),
+        hint: hint(err),
         device_lost,
         privacy,
         cancelled,
+        source: err.clone(),
+    }
+}
+
+fn title_key(err: &dto::Error) -> &'static str {
+    match err {
+        dto::Error::NoDevice => key("error.no_device.title"),
+        dto::Error::MultipleDevices => key("error.multiple_devices.title"),
+        dto::Error::PhoneUnplugged => key("error.phone_unplugged.title"),
+        dto::Error::DeviceInUse => key("error.device_in_use.title"),
+        dto::Error::AndroidFileTransferRunning => key("error.android_file_transfer.title"),
+        dto::Error::AllowStorageAccess => key("error.allow_storage_access.title"),
+        dto::Error::PermissionDenied => key("error.permission_denied.title"),
+        dto::Error::Disconnected => key("error.disconnected.title"),
+        dto::Error::Timeout => key("error.timeout.title"),
+        dto::Error::NotConnected => key("error.not_connected.title"),
+        dto::Error::PathNotFound(_) => key("error.path_not_found.title"),
+        dto::Error::FolderAccessDenied(_) => key("error.folder_access_denied.title"),
+        dto::Error::InvalidName(dto::NameProblem::Empty) => key("error.name_empty.title"),
+        dto::Error::InvalidName(dto::NameProblem::IllegalCharacters) => {
+            key("error.name_illegal.title")
+        }
+        dto::Error::InvalidName(dto::NameProblem::Reserved) => key("error.name_reserved.title"),
+        dto::Error::NameTaken(_) => key("error.name_taken.title"),
+        dto::Error::ReadOnly => key("error.read_only.title"),
+        dto::Error::Unsupported => key("error.unsupported.title"),
+        dto::Error::IntoItself(_) => key("error.into_itself.title"),
+        dto::Error::Cancelled => key("error.cancelled.title"),
+        dto::Error::UnsafeName(_) => key("error.unsafe_name.title"),
+        dto::Error::Crashed => key("error.crashed.title"),
+        dto::Error::NotEditable => key("error.not_editable.title"),
+        dto::Error::OtherPhone => key("error.other_phone.title"),
+        dto::Error::TooManyEdits => key("error.too_many_edits.title"),
+        dto::Error::TransferTooLarge => key("error.transfer_too_large.title"),
+        dto::Error::MacDiskFull => key("error.mac_disk_full.title"),
+        dto::Error::NotEnoughRoom { .. } => key("error.not_enough_room.title"),
+        dto::Error::VolumeReadOnly(_) => key("error.volume_read_only.title"),
+        dto::Error::TooBigForVolume(_) => key("error.too_big_for_volume.title"),
+        dto::Error::ChangedSince(_) => key("error.changed_since.title"),
+        dto::Error::PartlyUndone(_) => key("error.partly_undone.title"),
+        dto::Error::General(_) => key("error.general.title"),
+    }
+}
+
+fn hint(err: &dto::Error) -> String {
+    match err {
+        dto::Error::NoDevice => t("error.no_device.hint").to_owned(),
+        dto::Error::MultipleDevices => t("error.multiple_devices.hint").to_owned(),
+        dto::Error::PhoneUnplugged => t("error.phone_unplugged.hint").to_owned(),
+        dto::Error::DeviceInUse => t("error.device_in_use.hint").to_owned(),
+        dto::Error::AndroidFileTransferRunning => t("error.android_file_transfer.hint").to_owned(),
+        dto::Error::AllowStorageAccess => t("error.allow_storage_access.hint").to_owned(),
+        dto::Error::PermissionDenied => t("error.permission_denied.hint").to_owned(),
+        dto::Error::Disconnected => t("error.disconnected.hint").to_owned(),
+        dto::Error::Timeout => t("error.timeout.hint").to_owned(),
+        dto::Error::NotConnected => t("error.not_connected.hint").to_owned(),
+        dto::Error::PathNotFound(path) => tf("error.path_not_found.hint", &[("path", path)]),
+        dto::Error::FolderAccessDenied(path) => tf(
+            "error.folder_access_denied.hint",
+            &[("path", path), ("pane", privacy_pane_name(path))],
+        ),
+        dto::Error::InvalidName(dto::NameProblem::Empty) => t("error.name_empty.hint").to_owned(),
+        dto::Error::InvalidName(dto::NameProblem::IllegalCharacters) => {
+            t("error.name_illegal.hint").to_owned()
+        }
+        dto::Error::InvalidName(dto::NameProblem::Reserved) => {
+            t("error.name_reserved.hint").to_owned()
+        }
+        dto::Error::NameTaken(name) => tf("error.name_taken.hint", &[("name", name)]),
+        dto::Error::ReadOnly => t("error.read_only.hint").to_owned(),
+        dto::Error::Unsupported => t("error.unsupported.hint").to_owned(),
+        dto::Error::IntoItself(name) => tf("error.into_itself.hint", &[("name", name)]),
+        dto::Error::Cancelled => t("error.cancelled.hint").to_owned(),
+        dto::Error::UnsafeName(name) => tf("error.unsafe_name.hint", &[("name", name)]),
+        dto::Error::Crashed => t("error.crashed.hint").to_owned(),
+        dto::Error::NotEditable => t("error.not_editable.hint").to_owned(),
+        dto::Error::OtherPhone => t("error.other_phone.hint").to_owned(),
+        dto::Error::TooManyEdits => t("error.too_many_edits.hint").to_owned(),
+        dto::Error::TransferTooLarge => t("error.transfer_too_large.hint").to_owned(),
+        dto::Error::MacDiskFull => t("error.mac_disk_full.hint").to_owned(),
+        dto::Error::NotEnoughRoom { needed, free, disk } => tf(
+            "error.not_enough_room.hint",
+            &[
+                ("needed", &crate::handler::format::format_bytes(*needed)),
+                ("free", &crate::handler::format::format_bytes(*free)),
+                ("disk", &disk_phrase(disk)),
+            ],
+        ),
+        dto::Error::VolumeReadOnly(disk) => tf(
+            "error.volume_read_only.hint",
+            &[("disk", &disk_phrase(disk))],
+        ),
+        dto::Error::TooBigForVolume(disk) => tf(
+            "error.too_big_for_volume.hint",
+            &[("disk", &disk_phrase(disk))],
+        ),
+        dto::Error::ChangedSince(name) => tf("error.changed_since.hint", &[("name", name)]),
+        dto::Error::PartlyUndone(name) => tf("error.partly_undone.hint", &[("name", name)]),
+        dto::Error::General(detail) => tf("error.general.hint", &[("detail", detail)]),
+    }
+}
+
+fn privacy_pane_name(path: &str) -> &'static str {
+    match privacy_pane(path) {
+        dto::PrivacyPane::FilesAndFolders => t("error.privacy_pane.files_and_folders"),
+        dto::PrivacyPane::FullDiskAccess => t("error.privacy_pane.full_disk_access"),
+    }
+}
+
+fn disk_phrase(disk: &dto::Disk) -> String {
+    match disk {
+        dto::Disk::MacDisk => t("error.disk.mac").to_owned(),
+        dto::Disk::Volume(name) => tf("error.disk.volume", &[("name", name)]),
+        dto::Disk::PhoneStorage(name) => tf("error.disk.phone_storage", &[("name", name)]),
+        dto::Disk::Folder(path) => tf("error.disk.folder", &[("path", path)]),
     }
 }
 
@@ -398,7 +379,7 @@ mod every_error {
             dto::Error::NotEnoughRoom {
                 needed: 2,
                 free: 1,
-                place: "on your Mac's disk".into(),
+                disk: dto::Disk::MacDisk,
             },
             dto::Error::InvalidName(dto::NameProblem::Empty),
             dto::Error::InvalidName(dto::NameProblem::IllegalCharacters),
@@ -409,8 +390,8 @@ mod every_error {
             dto::Error::IntoItself("Trip".into()),
             dto::Error::Cancelled,
             dto::Error::MacDiskFull,
-            dto::Error::VolumeReadOnly("on “BACKUP”".into()),
-            dto::Error::TooBigForVolume("on “KINGSTON”".into()),
+            dto::Error::VolumeReadOnly(dto::Disk::Volume("BACKUP".into())),
+            dto::Error::TooBigForVolume(dto::Disk::Volume("KINGSTON".into())),
             dto::Error::UnsafeName("../x".into()),
             dto::Error::TransferTooLarge,
             dto::Error::General("x".into()),
@@ -470,7 +451,9 @@ mod every_error {
 
     #[test]
     fn a_read_only_disk_and_a_fat32_disk_say_which_and_what_to_do() {
-        let read_only = to_error_response(dto::Error::VolumeReadOnly("on “BACKUP”".into()));
+        let read_only = to_error_response(dto::Error::VolumeReadOnly(dto::Disk::Volume(
+            "BACKUP".into(),
+        )));
         assert_eq!(read_only.title, "That disk is read-only");
         assert!(
             read_only
@@ -478,7 +461,9 @@ mod every_error {
                 .contains("Nothing can be written on “BACKUP”")
         );
         assert!(read_only.hint.contains("NTFS"));
-        let too_big = to_error_response(dto::Error::TooBigForVolume("on “KINGSTON”".into()));
+        let too_big = to_error_response(dto::Error::TooBigForVolume(dto::Disk::Volume(
+            "KINGSTON".into(),
+        )));
         assert_eq!(too_big.title, "4 GB or more: too big for a FAT32 disk");
         assert!(
             too_big
@@ -493,7 +478,7 @@ mod every_error {
         let response = to_error_response(dto::Error::NotEnoughRoom {
             needed: 12_400_000_000,
             free: 4_100_000_000,
-            place: "on “USB STICK”".into(),
+            disk: dto::Disk::Volume("USB STICK".into()),
         });
 
         assert_eq!(response.title, "Not enough room");

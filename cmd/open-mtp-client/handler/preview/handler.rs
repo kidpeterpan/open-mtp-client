@@ -14,6 +14,7 @@ use internal::dto;
 
 use super::mapper;
 use crate::handler::error::{self, ErrorResponse};
+use crate::i18n::t;
 
 pub type Progress = Box<dyn Fn(dto::TransferProgress) + Send + Sync>;
 
@@ -111,6 +112,10 @@ impl Handler {
     }
 
     /// Phone files are being fetched (the phone's one session is in use).
+    pub fn language_changed(&mut self) {
+        self.notice = None;
+    }
+
     pub fn is_fetching(&self) -> bool {
         self.fetching.is_some()
     }
@@ -268,7 +273,9 @@ impl Handler {
                     ))
                     .size(13),
                     space::horizontal(),
-                    text("esc to stop").size(12).style(text::secondary),
+                    text(t("preview.esc_to_stop"))
+                        .size(12)
+                        .style(text::secondary),
                 ]
                 .align_y(Alignment::Center),
                 progress_bar(0.0..=1.0, mapper::fraction(fetching.progress.as_ref())).girth(4),
@@ -389,6 +396,34 @@ mod tests {
         ));
         let _ = handler.update(Message::Dismiss);
         assert!(!handler.is_visible());
+    }
+
+    #[tokio::test]
+    async fn a_change_of_language_clears_what_was_said_and_rewords_the_banner_of_a_fetch() {
+        let mut handler = Handler::new(Arc::new(FakePreview::fetching(Ok(dto::Fetched {
+            too_big: vec!["huge.mov".into()],
+            ..dto::Fetched::default()
+        }))));
+        let task = handler.phone(request(&["huge.mov"]));
+        settle(&mut handler, task).await;
+        assert!(handler.is_visible());
+
+        crate::i18n::set_language(dto::Language::Thai);
+        handler.language_changed();
+
+        assert!(
+            !handler.is_visible(),
+            "what was said in English is not said again in Thai"
+        );
+        let _ = handler.phone(request(&["a.jpg"]));
+        assert!(handler.is_fetching());
+        assert!(shows(&handler, crate::i18n::t("preview.esc_to_stop")));
+        assert!(!shows(&handler, "esc to stop"));
+        handler.language_changed();
+        assert!(
+            handler.is_fetching(),
+            "a fetch carries on through the switch"
+        );
     }
 
     #[tokio::test]

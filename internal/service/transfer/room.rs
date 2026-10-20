@@ -6,15 +6,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::dto::Error;
+use crate::dto::{Disk, Error};
 
 /// How much room there is somewhere, and how to name that place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Room {
     pub free: u64,
-    /// "on your Mac's disk", "on “USB STICK”", "on the phone's “Internal
-    /// shared storage”".
-    pub place: String,
+    pub disk: Disk,
     /// Nothing can be written there (an NTFS drive, a locked card).
     pub read_only: bool,
     /// The biggest file its file system holds, where that is a limit
@@ -24,10 +22,10 @@ pub struct Room {
 
 impl Room {
     /// Room with no limit but its free space.
-    pub fn free(free: u64, place: impl Into<String>) -> Self {
+    pub fn free(free: u64, disk: Disk) -> Self {
         Self {
             free,
-            place: place.into(),
+            disk,
             read_only: false,
             most_per_file: None,
         }
@@ -43,7 +41,7 @@ const MNT_RDONLY: u32 = 0x0000_0001;
 /// Refuses a write anywhere on a read-only room before a byte moves.
 pub(super) fn ensure_writable(room: Option<&Room>) -> Result<(), Error> {
     match room {
-        Some(room) if room.read_only => Err(Error::VolumeReadOnly(room.place.clone())),
+        Some(room) if room.read_only => Err(Error::VolumeReadOnly(room.disk.clone())),
         _ => Ok(()),
     }
 }
@@ -67,7 +65,7 @@ pub(super) fn ensure(needed: u64, room: Option<&Room>) -> Result<(), Error> {
         Some(room) if needed > room.free => Err(Error::NotEnoughRoom {
             needed,
             free: room.free,
-            place: room.place.clone(),
+            disk: room.disk.clone(),
         }),
         _ => Ok(()),
     }
@@ -75,7 +73,7 @@ pub(super) fn ensure(needed: u64, room: Option<&Room>) -> Result<(), Error> {
 
 /// A phone storage's room, from what it reported when it was last fetched.
 pub(super) fn phone_room(free: u64, name: &str) -> Room {
-    Room::free(free, format!("on the phone's “{name}”"))
+    Room::free(free, Disk::PhoneStorage(name.to_owned()))
 }
 
 /// The free space of the volume `path` is on (the nearest folder above it
@@ -115,15 +113,15 @@ fn room_of(free: u64, mounted: &str, kind: &str, flags: u32) -> Room {
     Room {
         read_only: flags & MNT_RDONLY != 0,
         most_per_file: (kind == "msdos").then_some(FAT32_MOST),
-        ..Room::free(free, place_of(mounted))
+        ..Room::free(free, disk_of(mounted))
     }
 }
 
 /// How a volume mounted at `mounted` is named to the user.
-fn place_of(mounted: &str) -> String {
+fn disk_of(mounted: &str) -> Disk {
     match Path::new(mounted).file_name() {
-        Some(name) if mounted != "/" => format!("on “{}”", name.to_string_lossy()),
-        _ => "on your Mac's disk".to_owned(),
+        Some(name) if mounted != "/" => Disk::Volume(name.to_string_lossy().into_owned()),
+        _ => Disk::MacDisk,
     }
 }
 
@@ -132,25 +130,25 @@ mod tests {
     use super::*;
 
     fn room(free: u64) -> Room {
-        Room::free(free, "on your Mac's disk")
+        Room::free(free, Disk::MacDisk)
     }
 
     #[test]
     fn a_volume_says_whether_it_can_be_written_and_how_big_a_file_it_holds() {
         let apfs = room_of(9, "/", "apfs", 0x0000_1000);
-        assert_eq!(apfs, Room::free(9, "on your Mac's disk"));
+        assert_eq!(apfs, Room::free(9, Disk::MacDisk));
         let ntfs = room_of(9, "/Volumes/BACKUP", "ntfs", MNT_RDONLY | 0x0000_1000);
         assert!(ntfs.read_only && ntfs.most_per_file.is_none());
         let fat = room_of(9, "/Volumes/KINGSTON", "msdos", 0);
         assert_eq!(
-            (fat.read_only, fat.most_per_file, fat.place.as_str()),
-            (false, Some(FAT32_MOST), "on “KINGSTON”")
+            (fat.read_only, fat.most_per_file, fat.disk.clone()),
+            (false, Some(FAT32_MOST), Disk::Volume("KINGSTON".into()))
         );
         assert_eq!(room_of(9, "/Volumes/X", "exfat", 0).most_per_file, None);
 
         assert_eq!(
             ensure_writable(Some(&ntfs)),
-            Err(Error::VolumeReadOnly("on “BACKUP”".into()))
+            Err(Error::VolumeReadOnly(Disk::Volume("BACKUP".into())))
         );
         assert_eq!(ensure_writable(Some(&fat)), Ok(()));
         assert_eq!(ensure_writable(None), Ok(()));
@@ -174,7 +172,7 @@ mod tests {
             Err(Error::NotEnoughRoom {
                 needed: 100,
                 free: 40,
-                place: "on your Mac's disk".into(),
+                disk: Disk::MacDisk,
             })
         );
         assert_eq!(ensure(40, Some(&room(40))), Ok(()), "exactly enough");
@@ -189,11 +187,14 @@ mod tests {
 
     #[test]
     fn volumes_are_named_as_finder_names_them() {
-        assert_eq!(place_of("/"), "on your Mac's disk");
-        assert_eq!(place_of("/Volumes/USB STICK"), "on “USB STICK”");
+        assert_eq!(disk_of("/"), Disk::MacDisk);
         assert_eq!(
-            phone_room(5, "Internal shared storage").place,
-            "on the phone's “Internal shared storage”"
+            disk_of("/Volumes/USB STICK"),
+            Disk::Volume("USB STICK".into())
+        );
+        assert_eq!(
+            phone_room(5, "Internal shared storage").disk,
+            Disk::PhoneStorage("Internal shared storage".into())
         );
     }
 
@@ -206,7 +207,7 @@ mod tests {
         let below = mac_room(&dir.path().join("not/made/yet")).unwrap();
 
         assert!(here.free > 0);
-        assert_eq!(below.place, here.place, "the nearest folder that exists");
+        assert_eq!(below.disk, here.disk, "the nearest folder that exists");
         assert!(!here.read_only, "a temporary folder can be written");
         assert_eq!(here.most_per_file, None, "this Mac's own disk is APFS");
     }

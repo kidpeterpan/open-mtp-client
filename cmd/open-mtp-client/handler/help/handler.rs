@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use iced::widget::{button, column, container, row, rule, scrollable, space, text};
+use iced::widget::{button, column, container, responsive, row, rule, scrollable, space, text};
 use iced::{Alignment, Element, Length, Task};
 use internal::dto;
 
@@ -11,6 +11,7 @@ use super::whats_new;
 use crate::handler::diagnosis::{self, DiagnosisResponse};
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::format;
+use crate::i18n::{english_only, key, t, tf};
 use crate::keymap;
 
 #[async_trait::async_trait]
@@ -43,7 +44,7 @@ pub enum Message {
     /// dialog asked, so a slow answer can't land in a later one.
     Checked {
         generation: u64,
-        response: DiagnosisResponse,
+        diagnosis: dto::Diagnosis,
         holders: Vec<dto::Holder>,
     },
     /// The diagnostics report is ready.
@@ -62,6 +63,7 @@ enum Check {
     Idle,
     Running,
     Done {
+        diagnosis: dto::Diagnosis,
         response: DiagnosisResponse,
         /// What "Quit … and check again" quits.
         holders: Vec<dto::Holder>,
@@ -158,7 +160,7 @@ impl Handler {
             generation: 0,
             check: Check::Idle,
             report: Report::Idle,
-            phone: Phone::new("not connected", false),
+            phone: Phone::new(english_only("not connected"), false),
             timing: Timing::Idle,
             copied: false,
             shortcuts: mapper::to_shortcut_groups(&keymap::catalog()),
@@ -206,16 +208,35 @@ impl Handler {
         self.generation += 1;
     }
 
+    pub fn language_changed(&mut self) {
+        self.shortcuts = mapper::to_shortcut_groups(&keymap::catalog());
+        if let Check::Done {
+            diagnosis,
+            response,
+            ..
+        } = &mut self.check
+        {
+            *response = respond(diagnosis, &self.phone);
+        }
+        if let Timing::Done(Err(error)) = &mut self.timing {
+            *error = error.reworded();
+        }
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Request(request) => self.handle(request),
             Message::Checked {
                 generation,
-                response,
+                diagnosis,
                 holders,
             } => {
                 if self.is_current(generation) {
-                    self.check = Check::Done { response, holders };
+                    self.check = Check::Done {
+                        response: respond(&diagnosis, &self.phone),
+                        diagnosis,
+                        holders,
+                    };
                 }
                 Task::none()
             }
@@ -348,6 +369,15 @@ impl Handler {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        responsive(move |size| {
+            container(self.dialog(size.height))
+                .center(Length::Fill)
+                .into()
+        })
+        .into()
+    }
+
+    fn dialog(&self, window_height: f32) -> Element<'_, Message> {
         let tab = |label: &'static str, tab: Tab| {
             button(text(label).size(14))
                 .style(if self.tab == tab {
@@ -367,23 +397,24 @@ impl Handler {
         container(
             column![
                 row![
-                    text("Help").size(20),
+                    text(t("help.title")).size(20),
                     space::horizontal(),
-                    button(text("Done"))
+                    button(text(t("label.done")))
                         .style(button::primary)
                         .on_press(Message::Request(Request::Close)),
                 ]
                 .align_y(Alignment::Center),
                 row![
-                    tab("Shortcuts", Tab::Shortcuts),
-                    tab("Troubleshooting", Tab::Troubleshooting),
-                    tab("What's new", Tab::WhatsNew),
-                    tab("About", Tab::About),
+                    tab(t("help.tab.shortcuts"), Tab::Shortcuts),
+                    tab(t("help.tab.troubleshooting"), Tab::Troubleshooting),
+                    tab(t("help.tab.whats_new"), Tab::WhatsNew),
+                    tab(t("help.tab.about"), Tab::About),
                 ]
                 .spacing(6),
                 rule::horizontal(1),
-                scrollable(container(body).padding([0, 12]).width(Length::Fill))
-                    .height(Length::Fixed(400.0)),
+                scrollable(container(body).padding([0, 12]).width(Length::Fill)).height(
+                    Length::Fixed((window_height - AROUND_THE_LIST).clamp(LIST_LEAST, LIST_MOST))
+                ),
             ]
             .spacing(12),
         )
@@ -401,12 +432,13 @@ impl Handler {
             let is_new = self.new_since.is_some_and(|since| {
                 dto::Version::parse(release.version).is_some_and(|version| version > since)
             });
-            let mut heading = row![text(format!("Version {}", release.version)).size(16)]
-                .spacing(8)
-                .align_y(Alignment::Center);
+            let mut heading =
+                row![text(tf("help.release_version", &[("version", release.version)])).size(16)]
+                    .spacing(8)
+                    .align_y(Alignment::Center);
             if is_new {
                 heading = heading.push(
-                    container(text("New").size(11))
+                    container(text(t("help.new_badge")).size(11))
                         .padding([1, 6])
                         .style(container::primary),
                 );
@@ -416,7 +448,7 @@ impl Handler {
                 notes = notes.push(
                     row![
                         text("•").size(14).style(text::secondary),
-                        text(*note).size(14).width(Length::Fill)
+                        text(t(note)).size(14).width(Length::Fill)
                     ]
                     .spacing(8),
                 );
@@ -439,7 +471,7 @@ impl Handler {
                 let mut keys = row![].spacing(6).align_y(Alignment::Center);
                 for (index, label) in line.keys.iter().enumerate() {
                     if index > 0 {
-                        keys = keys.push(text("or").size(12).style(text::secondary));
+                        keys = keys.push(text(t("help.or")).size(12).style(text::secondary));
                     }
                     keys = keys.push(key(label));
                 }
@@ -449,7 +481,7 @@ impl Handler {
                 );
             }
         }
-        content = content.push(text("With the mouse").size(13).style(text::secondary));
+        content = content.push(text(t("help.with_mouse")).size(13).style(text::secondary));
         for (gesture, does) in mapper::mouse_tips() {
             content = content.push(
                 row![
@@ -468,23 +500,22 @@ impl Handler {
     /// What the open phone says it can do, and a timed reading of the folder
     /// its pane shows.
     fn phone_section(&self) -> Element<'_, Message> {
-        let mut section = column![
-            rule::horizontal(1),
-            text("What this phone says it can do").size(14)
-        ]
-        .spacing(6);
+        let mut section =
+            column![rule::horizontal(1), text(t("help.phone.title")).size(14)].spacing(6);
         if let Some(abilities) = &self.phone.abilities {
             let (can, cannot) = format::abilities_in_words(abilities);
-            let line = |label: &str, what: Vec<&str>| {
-                text(format!("{label} {}.", what.join(", ")))
+            let line = |sentence: &'static str, what: Vec<&str>| {
+                let what: Vec<String> = what.into_iter().map(str::to_owned).collect();
+                text(tf(sentence, &[("what", &format::comma_list(&what))]))
                     .size(13)
                     .width(Length::Fill)
             };
             if !can.is_empty() {
-                section = section.push(line("It can", can));
+                section = section.push(line(key("help.phone.can"), can));
             }
             if !cannot.is_empty() {
-                section = section.push(line("It can't", cannot).style(text::secondary));
+                section =
+                    section.push(line(key("help.phone.cannot"), cannot).style(text::secondary));
             }
         }
         if let Some(slow) = format::slow_link_note(self.phone.link) {
@@ -493,7 +524,7 @@ impl Handler {
         if let Some((_, path)) = &self.phone.folder {
             let running = matches!(self.timing, Timing::Running);
             let mut timing = row![
-                button(text(format!("Time reading “{path}”")).size(13))
+                button(text(tf("help.phone.time", &[("path", path)])).size(13))
                     .style(button::secondary)
                     .on_press_maybe((!running).then_some(Message::Request(Request::TimeReading)))
             ]
@@ -501,15 +532,17 @@ impl Handler {
             .align_y(Alignment::Center);
             let said = match &self.timing {
                 Timing::Idle => None,
-                Timing::Running => Some("Reading…".to_owned()),
+                Timing::Running => Some(t("help.phone.reading").to_owned()),
                 Timing::Done(Ok(reading)) => Some(format::format_reading(reading)),
-                Timing::Done(Err(error)) => Some(format!("Could not read it: {}", error.title)),
+                Timing::Done(Err(error)) => {
+                    Some(tf("help.phone.could_not", &[("reason", &error.title)]))
+                }
             };
             if let Some(said) = said {
                 timing = timing.push(text(said).size(13).style(text::secondary));
             }
             section = section.push(timing).push(
-                text("Read from the phone itself, not from what the app remembers.")
+                text(t("help.phone.reading_note"))
                     .size(12)
                     .style(text::secondary),
             );
@@ -519,8 +552,8 @@ impl Handler {
 
     fn troubleshooting_tab(&self) -> Element<'_, Message> {
         let mut content = column![
-            text("If your phone won't connect").size(16),
-            text("The check below looks at your Mac and the USB port right now.")
+            text(t("help.trouble.title")).size(16),
+            text(t("help.trouble.intro"))
                 .size(13)
                 .style(text::secondary),
         ]
@@ -528,7 +561,11 @@ impl Handler {
 
         match &self.check {
             Check::Idle | Check::Running => {
-                content = content.push(text("Checking…").size(14).style(text::secondary));
+                content = content.push(
+                    text(t("help.trouble.checking"))
+                        .size(14)
+                        .style(text::secondary),
+                );
             }
             Check::Done { response, .. } => {
                 content = content.push(diagnosis::checklist(&response.checks));
@@ -541,7 +578,7 @@ impl Handler {
                     );
                 }
                 buttons = buttons.push(
-                    button(text("Check again").size(13))
+                    button(text(t("label.check_again")).size(13))
                         .style(button::secondary)
                         .on_press(Message::Request(Request::CheckAgain)),
                 );
@@ -554,19 +591,19 @@ impl Handler {
         }
         content = content
             .push(rule::horizontal(1))
-            .push(text("Things to try, in order").size(14));
-        for (number, step) in STEPS.iter().enumerate() {
+            .push(text(t("help.trouble.things")).size(14));
+        for (number, step) in STEPS.into_iter().enumerate() {
             content = content.push(
                 row![
                     text(format!("{}.", number + 1)).size(13).width(22),
-                    text(*step).size(13).width(Length::Fill),
+                    text(t(step)).size(13).width(Length::Fill),
                 ]
                 .spacing(4),
             );
         }
         content
             .push(
-                text("Still stuck? Open About and copy the report to include with your question.")
+                text(t("help.trouble.still_stuck"))
                     .size(13)
                     .style(text::secondary),
             )
@@ -576,36 +613,45 @@ impl Handler {
     fn about_tab(&self) -> Element<'_, Message> {
         let mut content = column![
             row![
-                text(format!("open-mtp-client {}", env!("CARGO_PKG_VERSION")))
-                    .size(16)
-                    .width(Length::Fill),
-                button(text("Buy me a coffee").size(13))
+                text(english_only(format!(
+                    "open-mtp-client {}",
+                    env!("CARGO_PKG_VERSION")
+                )))
+                .size(16)
+                .width(Length::Fill),
+                button(text(t("help.about.coffee")).size(13))
                     .style(button::secondary)
                     .on_press(Message::Request(Request::OpenLink(Link::Support))),
             ]
             .spacing(10)
             .align_y(iced::Alignment::Center),
-            text("Android ↔ Mac file transfer. Free and open source, written in Rust, with no telemetry.")
-                .size(13)
-                .style(text::secondary),
+            text(t("help.about.line")).size(13).style(text::secondary),
             rule::horizontal(1),
-            text("Your privacy").size(14),
-            text(PRIVACY).size(13),
+            text(t("help.about.privacy_title")).size(14),
+            text(t(PRIVACY)).size(13),
             rule::horizontal(1),
         ]
         .spacing(8);
         if let Some(path) = &self.cli {
             let copy = if self.cli_copied {
-                "Copied ✓"
+                t("help.about.copied")
             } else {
-                "Copy"
+                t("menu.item.copy")
             };
             content = content
-                .push(text("Command line").size(14))
+                .push(text(t("help.about.cli_title")).size(14))
                 .push(
-                    text("open-mtp-client-cli comes with the app, for scripts (open-mtp-client-cli --help). To type it in Terminal, link it into your path with this line (/usr/local/bin is in every Mac's path; if Terminal says it can't, run sudo mkdir -p /usr/local/bin and put sudo in front of the line):")
-                        .size(13)
-                        .style(text::secondary),
+                    text(tf(
+                        "help.about.cli_text",
+                        &[
+                            ("cli", english_only("open-mtp-client-cli")),
+                            ("help", english_only("open-mtp-client-cli --help")),
+                            ("folder", english_only("/usr/local/bin")),
+                            ("mkdir", english_only("sudo mkdir -p /usr/local/bin")),
+                        ],
+                    ))
+                    .size(13)
+                    .style(text::secondary),
                 )
                 .push(text(path.clone()).size(12).font(iced::Font::MONOSPACE))
                 .push(
@@ -628,8 +674,8 @@ impl Handler {
                 .push(rule::horizontal(1));
         }
         content = content.extend([
-            text("Diagnostics").size(14).into(),
-            text("If something goes wrong, this is everything a report from this app would contain: no file names, no photos, no account details. Nothing is sent anywhere; you decide whether to copy it.")
+            text(t("help.about.diagnostics_title")).size(14).into(),
+            text(t("help.about.diagnostics_text"))
                 .size(13)
                 .style(text::secondary)
                 .into(),
@@ -637,7 +683,11 @@ impl Handler {
 
         match &self.report {
             Report::Idle | Report::Gathering => {
-                content = content.push(text("Collecting…").size(13).style(text::secondary));
+                content = content.push(
+                    text(t("help.about.collecting"))
+                        .size(13)
+                        .style(text::secondary),
+                );
             }
             Report::Ready(report) => {
                 content = content.push(
@@ -647,19 +697,19 @@ impl Handler {
                         .style(container::bordered_box),
                 );
                 let copy = if self.copied {
-                    "Copied ✓"
+                    t("help.about.copied")
                 } else {
-                    "Copy report"
+                    t("help.about.copy_report")
                 };
                 content = content.push(
                     row![
                         button(text(copy).size(13))
                             .style(button::primary)
                             .on_press(Message::Request(Request::CopyReport)),
-                        button(text("Report a problem on GitHub").size(13))
+                        button(text(t("help.about.report_issue")).size(13))
                             .style(button::secondary)
                             .on_press(Message::Request(Request::OpenLink(Link::NewIssue))),
-                        button(text("Project page").size(13))
+                        button(text(t("help.about.project_page")).size(13))
                             .style(button::secondary)
                             .on_press(Message::Request(Request::OpenLink(Link::Project))),
                     ]
@@ -671,37 +721,46 @@ impl Handler {
     }
 }
 
+const AROUND_THE_LIST: f32 = 208.0;
+const LIST_LEAST: f32 = 120.0;
+const LIST_MOST: f32 = 400.0;
+
 /// What to try when a phone won't connect, most likely first; the live
 /// check above names what applies here.
 const STEPS: [&str; 6] = [
-    "Unlock the phone and keep its screen on.",
-    "Swipe down, tap the USB notification and choose “File transfer”. If it asks to allow access to phone data, tap Allow.",
-    "Use a cable that carries data (some only charge), plugged straight into the Mac rather than a hub.",
-    "Quit apps that grab phones: Android File Transfer, Photos, Image Capture, Samsung Smart Switch, Google Drive, Dropbox. The check names the ones that are running.",
-    "On a Samsung, uninstalling Smart Switch and its drivers often fixes it.",
-    "Unplug, wait a few seconds, plug back in, then press Reconnect.",
+    key("help.trouble.step_1"),
+    key("help.trouble.step_2"),
+    key("help.trouble.step_3"),
+    key("help.trouble.step_4"),
+    key("help.trouble.step_5"),
+    key("help.trouble.step_6"),
 ];
 
 /// Said in the About tab, and checked against what the app is built from.
-const PRIVACY: &str = "open-mtp-client has no analytics, no accounts and no network code of its own. Your files go between your phone and your Mac and nowhere else.";
+const PRIVACY: &str = key("help.about.privacy");
 
 /// Looks at the Mac and the USB bus. For someone who is connected there is
 /// nothing to fix, so the findings are shown as facts and nothing is offered
 /// to quit.
 async fn check_now(service: Arc<dyn Service>, generation: u64, phone: Phone) -> Message {
     let diagnosis = service.checkup().await;
-    if phone.connected {
-        return Message::Checked {
-            generation,
-            response: diagnosis::to_connected_response(&diagnosis, &phone.summary),
-            holders: Vec::new(),
-        };
-    }
+    let holders = if phone.connected {
+        Vec::new()
+    } else {
+        diagnosis.holders.clone().unwrap_or_default()
+    };
     Message::Checked {
         generation,
-        response: diagnosis::to_diagnosis_response(&diagnosis),
-        holders: diagnosis.holders.unwrap_or_default(),
+        diagnosis,
+        holders,
     }
+}
+
+fn respond(diagnosis: &dto::Diagnosis, phone: &Phone) -> DiagnosisResponse {
+    if phone.connected {
+        return diagnosis::to_connected_response(diagnosis, &phone.summary);
+    }
+    diagnosis::to_diagnosis_response(diagnosis)
 }
 
 /// Collects the diagnostics report.
@@ -1008,7 +1067,10 @@ mod tests {
         }
 
         assert_eq!(fake.checks.load(Ordering::SeqCst), 1);
-        let Check::Done { response, holders } = &handler.check else {
+        let Check::Done {
+            response, holders, ..
+        } = &handler.check
+        else {
             panic!("the check should be done");
         };
         assert_eq!(holders, &[holder("Photos")]);
@@ -1282,13 +1344,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_change_of_language_rewords_what_help_holds_and_leaves_the_report_in_english() {
+        let (mut handler, _) = handler_with(photos_in_the_way());
+        handler.open(Phone::new("x", false));
+        settle(&mut handler, Request::Show(Tab::Troubleshooting)).await;
+        settle(&mut handler, Request::Show(Tab::About)).await;
+        handler.timing = Timing::Done(Err(error::to_error_response(dto::Error::Timeout)));
+        let Report::Ready(report) = &handler.report else {
+            panic!("the report should be ready");
+        };
+        let report = report.clone();
+        let english_group = handler.shortcuts[0].title.clone();
+
+        crate::i18n::set_language(dto::Language::Thai);
+        handler.language_changed();
+
+        assert_eq!(
+            handler.shortcuts[0].title,
+            crate::i18n::t("keymap.group.moving")
+        );
+        assert_ne!(handler.shortcuts[0].title, english_group);
+        let Check::Done { response, .. } = &handler.check else {
+            panic!("the check should still be there");
+        };
+        assert_eq!(
+            response,
+            &diagnosis::to_diagnosis_response(&photos_in_the_way().diagnosis),
+            "the checklist is worded again, not asked again"
+        );
+        let Timing::Done(Err(timing_error)) = &handler.timing else {
+            panic!("the timing's answer should stay");
+        };
+        assert_eq!(
+            timing_error.title,
+            error::to_error_response(dto::Error::Timeout).title
+        );
+        assert!(matches!(&handler.report, Report::Ready(text) if *text == report));
+        handler.tab = Tab::Troubleshooting;
+        assert!(text_on_screen(
+            &handler,
+            crate::i18n::t("help.trouble.title")
+        ));
+        assert!(!text_on_screen(&handler, "If your phone won't connect"));
+    }
+
+    #[tokio::test]
     async fn the_troubleshooting_steps_are_all_there() {
         let (mut handler, _) = handler();
         handler.open(Phone::new("x", false));
         settle(&mut handler, Request::Show(Tab::Troubleshooting)).await;
 
         for step in STEPS {
-            assert!(text_on_screen(&handler, step), "{step:?} is not shown");
+            assert!(text_on_screen(&handler, t(step)), "{step:?} is not shown");
         }
     }
 
@@ -1300,7 +1407,7 @@ mod tests {
 
         let mut ui = iced_test::simulator(handler.view());
 
-        assert!(ui.find(PRIVACY.to_owned()).is_ok());
+        assert!(ui.find(t(PRIVACY).to_owned()).is_ok());
         assert!(
             ui.find(format!("open-mtp-client {}", env!("CARGO_PKG_VERSION")))
                 .is_ok()
@@ -1463,7 +1570,7 @@ mod tests {
             &format!("Version {}", env!("CARGO_PKG_VERSION"))
         ));
         assert!(text_on_screen(&handler, "New"));
-        assert!(text_on_screen(&handler, whats_new::RELEASES[0].notes[0]));
+        assert!(text_on_screen(&handler, t(whats_new::RELEASES[0].notes[0])));
     }
 
     #[test]
@@ -1490,7 +1597,7 @@ mod tests {
         }
 
         assert_eq!(handler.tab, Tab::WhatsNew);
-        assert!(text_on_screen(&handler, whats_new::RELEASES[0].notes[0]));
+        assert!(text_on_screen(&handler, t(whats_new::RELEASES[0].notes[0])));
         assert!(!text_on_screen(&handler, "New"));
     }
 }
