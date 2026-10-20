@@ -1032,3 +1032,4 @@ app.stopping = Stopping the transfer…
 app.stopping_note = It stops at the next safe point, so what arrived is kept for next time. If the phone no longer answers, quit now.
 app.quit_now = Quit Now
 explorer.go_to_hint = A path from the top (/), from here, or ~ for home. ↑ ↓ pick a folder; Return goes.
+whatsnew.0_2_0.1 = Choose the app's language: English, Thai, Japanese or Simplified Chinese. A Mac set to one of them opens the app in that language, and Settings › Language changes it at once without losing your place or stopping a transfer.

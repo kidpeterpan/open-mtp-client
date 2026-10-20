@@ -2534,7 +2534,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "open-mtp-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "open-mtp-client-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "open-mtp-client-internal",
  "serde_json",
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "open-mtp-client-internal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block2 0.5.1",
  "bytes",
