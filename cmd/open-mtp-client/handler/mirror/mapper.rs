@@ -1,34 +1,35 @@
 use internal::dto;
 
 use crate::handler::format::{format_bytes, format_count};
+use crate::i18n::{count, key, t, tf};
 
-fn files(count: usize) -> String {
-    match count {
-        1 => "1 file".to_owned(),
-        n => format!("{} files", format_count(n)),
-    }
+fn files(number: usize) -> String {
+    count("text.files", number, &[])
 }
 
-fn items(count: usize) -> String {
-    match count {
-        1 => "1 item".to_owned(),
-        n => format!("{} items", format_count(n)),
-    }
+fn items(number: usize) -> String {
+    count("text.items", number, &[])
 }
 
-/// The side being written, as the dialog names it.
-pub fn target_name(direction: dto::MirrorDirection) -> &'static str {
+pub fn explanation(direction: dto::MirrorDirection) -> &'static str {
     match direction {
-        dto::MirrorDirection::ToMac => "the Mac",
-        dto::MirrorDirection::ToPhone => "the phone",
+        dto::MirrorDirection::ToMac => t("mirror.explain_to_mac"),
+        dto::MirrorDirection::ToPhone => t("mirror.explain_to_phone"),
+    }
+}
+
+pub fn hidden_note(direction: dto::MirrorDirection) -> &'static str {
+    match direction {
+        dto::MirrorDirection::ToMac => t("mirror.note_to_mac"),
+        dto::MirrorDirection::ToPhone => t("mirror.note_to_phone"),
     }
 }
 
 /// What the dialog says while it compares.
 pub fn comparing(seen: usize) -> String {
     match seen {
-        0 => "Comparing the folders…".to_owned(),
-        n => format!("Comparing the folders… {} read on the phone", items(n)),
+        0 => t("mirror.comparing").to_owned(),
+        n => tf("mirror.comparing_so_far", &[("items", &items(n))]),
     }
 }
 
@@ -39,41 +40,47 @@ pub fn preview_lines(
     direction: dto::MirrorDirection,
     remove_extras: bool,
 ) -> Vec<String> {
-    let target = target_name(direction);
     let mut lines = Vec::new();
     if preview.new_files + preview.changed_files == 0 && (preview.extras == 0 || !remove_extras) {
-        lines.push(format!("Nothing to copy: {target} has all of it already."));
+        lines.push(
+            match direction {
+                dto::MirrorDirection::ToMac => t("mirror.nothing_to_copy_mac"),
+                dto::MirrorDirection::ToPhone => t("mirror.nothing_to_copy_phone"),
+            }
+            .to_owned(),
+        );
     }
     if preview.new_files > 0 {
-        lines.push(format!(
-            "{} to copy ({})",
-            files(preview.new_files),
-            format_bytes(preview.new_bytes)
+        lines.push(tf(
+            "mirror.to_copy",
+            &[
+                ("files", &files(preview.new_files)),
+                ("size", &format_bytes(preview.new_bytes)),
+            ],
         ));
     }
     if preview.changed_files > 0 {
-        lines.push(format!(
-            "{} changed, to replace ({})",
-            files(preview.changed_files),
-            format_bytes(preview.changed_bytes)
+        lines.push(tf(
+            "mirror.changed",
+            &[
+                ("files", &files(preview.changed_files)),
+                ("size", &format_bytes(preview.changed_bytes)),
+            ],
         ));
     }
     if preview.extras > 0 {
-        lines.push(match (remove_extras, direction) {
-            (false, _) => format!("{} only on {target}: kept", items(preview.extras)),
-            (true, dto::MirrorDirection::ToMac) => {
-                format!("{} only on the Mac: to the Trash", items(preview.extras))
-            }
-            (true, dto::MirrorDirection::ToPhone) => format!(
-                "{} only on the phone: deleted from the phone for good",
-                items(preview.extras)
-            ),
-        });
+        let sentence = match (remove_extras, direction) {
+            (false, dto::MirrorDirection::ToMac) => key("mirror.extras_kept_mac"),
+            (false, dto::MirrorDirection::ToPhone) => key("mirror.extras_kept_phone"),
+            (true, dto::MirrorDirection::ToMac) => key("mirror.extras_trash"),
+            (true, dto::MirrorDirection::ToPhone) => key("mirror.extras_deleted"),
+        };
+        lines.push(tf(sentence, &[("items", &items(preview.extras))]));
     }
     if preview.conflicts > 0 {
-        lines.push(format!(
-            "{} left alone: names that clash, or a file where a folder is",
-            items(preview.conflicts)
+        lines.push(tf(
+            "mirror.conflicts",
+            &[("items", &items(preview.conflicts))],
         ));
     }
     lines
@@ -87,7 +94,10 @@ pub fn sample_line(sample: &[String], total: usize) -> Option<String> {
     let shown = sample.join(", ");
     Some(match total.saturating_sub(sample.len()) {
         0 => shown,
-        more => format!("{shown} and {} more", format_count(more)),
+        more => tf(
+            "mirror.sample_more",
+            &[("shown", &shown), ("more", &format_count(more))],
+        ),
     })
 }
 

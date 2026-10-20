@@ -4,8 +4,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::dto::{
-    ColumnWidths, Density, LastFolders, MOST_PHONE_FOLDERS, MOST_RECENT, PhoneFolder, Settings,
-    SortKey, SortOrder, ThemeChoice, TileSize, Version, ViewMode, WindowPlace, limit_recent,
+    ColumnWidths, Density, Language, LanguageChoice, LastFolders, MOST_PHONE_FOLDERS, MOST_RECENT,
+    PhoneFolder, Settings, SortKey, SortOrder, ThemeChoice, TileSize, Version, ViewMode,
+    WindowPlace, limit_recent,
 };
 
 /// Where the panes were left, as stored in `folders.json`.
@@ -110,6 +111,7 @@ pub struct SettingsFile {
     mac_group: String,
     phone_group: String,
     list_density: String,
+    language: String,
     /// "1.2.3", or empty before the first run.
     last_seen_version: String,
     /// Missing until the window has been placed once.
@@ -255,6 +257,11 @@ pub fn to_file(settings: &Settings) -> SettingsFile {
             Density::Large => "large",
         }
         .to_owned(),
+        language: match settings.language {
+            LanguageChoice::FollowMac => "system",
+            LanguageChoice::Chosen(language) => language.code(),
+        }
+        .to_owned(),
         last_seen_version: settings
             .last_seen_version
             .map(|version| version.to_string())
@@ -338,6 +345,8 @@ pub fn to_settings(file: &SettingsFile) -> Settings {
             "large" => Density::Large,
             _ => Density::Standard,
         },
+        language: Language::from_code(&file.language)
+            .map_or(LanguageChoice::FollowMac, LanguageChoice::Chosen),
         last_seen_version: Version::parse(&file.last_seen_version),
         window: file.window.as_ref().and_then(to_place),
         mac_order: to_order(&file.mac_sort, file.mac_sort_descending),
@@ -415,6 +424,7 @@ mod tests {
             mac_folder_sizes: true,
             phone_folder_sizes: false,
             list_density: Density::Compact,
+            language: LanguageChoice::Chosen(Language::Japanese),
             last_seen_version: Some(Version {
                 major: 1,
                 minor: 12,
@@ -560,6 +570,74 @@ mod tests {
 
         assert_eq!(to_settings(&old).list_density, Density::Standard);
         assert_eq!(to_settings(&odd).list_density, Density::Standard);
+    }
+
+    #[test]
+    fn a_file_without_a_language_or_with_an_unknown_one_follows_the_mac() {
+        let old: SettingsFile = serde_json::from_str(r#"{"version": 1, "theme": "dark"}"#).unwrap();
+        let odd = SettingsFile {
+            language: "klingon".into(),
+            ..SettingsFile::default()
+        };
+
+        assert_eq!(to_settings(&old).language, LanguageChoice::FollowMac);
+        assert_eq!(to_settings(&odd).language, LanguageChoice::FollowMac);
+        assert_eq!(Settings::default().language, LanguageChoice::FollowMac);
+    }
+
+    #[test]
+    fn each_language_is_read_back_by_the_code_the_file_names_it_with() {
+        for (code, expected) in [
+            ("system", LanguageChoice::FollowMac),
+            ("en", LanguageChoice::Chosen(Language::English)),
+            ("th", LanguageChoice::Chosen(Language::Thai)),
+            ("ja", LanguageChoice::Chosen(Language::Japanese)),
+            (
+                "zh-Hans",
+                LanguageChoice::Chosen(Language::ChineseSimplified),
+            ),
+        ] {
+            let file: SettingsFile =
+                serde_json::from_str(&format!(r#"{{"version": 1, "language": "{code}"}}"#))
+                    .unwrap();
+
+            assert_eq!(to_settings(&file).language, expected, "{code}");
+        }
+    }
+
+    #[test]
+    fn each_language_choice_is_written_under_the_language_key_and_survives_a_read() {
+        let choices = [LanguageChoice::FollowMac]
+            .into_iter()
+            .chain(Language::ALL.into_iter().map(LanguageChoice::Chosen));
+
+        for choice in choices {
+            let settings = Settings {
+                language: choice,
+                ..Settings::default()
+            };
+            let written = serde_json::to_value(to_file(&settings)).unwrap();
+            let expected_code = match choice {
+                LanguageChoice::FollowMac => "system",
+                LanguageChoice::Chosen(language) => language.code(),
+            };
+
+            assert_eq!(written["language"], expected_code, "{choice:?}");
+            assert_eq!(to_settings(&to_file(&settings)), settings, "{choice:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_with_a_key_this_build_does_not_know_still_loads() {
+        let file: SettingsFile = serde_json::from_str(
+            r#"{"version": 1, "language": "th", "aKeyFromALaterBuild": {"x": 1}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            to_settings(&file).language,
+            LanguageChoice::Chosen(Language::Thai)
+        );
     }
 
     #[test]

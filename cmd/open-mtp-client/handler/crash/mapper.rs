@@ -1,59 +1,55 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Datelike, Local};
 use internal::dto;
 
 use super::response::Banner;
+use crate::handler::format::short_month;
+use crate::i18n::{count, t, tf};
 
-/// "18 Oct 2026, 08:30" in the Mac's time zone.
 pub fn when(at_ms: u64) -> String {
-    i64::try_from(at_ms)
+    let Some(at) = i64::try_from(at_ms)
         .ok()
         .and_then(DateTime::from_timestamp_millis)
-        .map_or_else(
-            || "at an unknown time".to_owned(),
-            |at| {
-                at.with_timezone(&Local)
-                    .format("%-d %b %Y, %H:%M")
-                    .to_string()
-            },
-        )
+    else {
+        return t("crash.unknown_time").to_owned();
+    };
+    let at = at.with_timezone(&Local);
+    tf(
+        "date.unreal",
+        &[
+            ("day", &at.day().to_string()),
+            ("month", short_month(at.month())),
+            ("year", &at.year().to_string()),
+            ("clock", &at.format("%H:%M").to_string()),
+        ],
+    )
 }
 
 /// What to say at start-up about reports an earlier run left (`notes` newest
 /// first, none of them told yet); `None` when there are none.
 pub fn earlier(notes: &[dto::CrashNote]) -> Option<Banner> {
     let newest = notes.first()?;
+    let when = when(newest.at_ms);
     let title = match notes.len() {
-        1 => format!(
-            "open-mtp-client quit unexpectedly last time ({}).",
-            when(newest.at_ms)
-        ),
-        n => format!(
-            "open-mtp-client quit unexpectedly {n} times since you last looked (latest {}).",
-            when(newest.at_ms)
-        ),
+        1 => tf("crash.earlier_one", &[("when", &when)]),
+        n => count("crash.earlier_many", n, &[("when", &when)]),
     };
     Some(Banner {
         title,
-        hint: "Transfers that were not finished, if any, are offered below. A report was saved on this Mac; it goes nowhere unless you send it.".to_owned(),
+        hint: t("crash.earlier_hint").to_owned(),
         can_show: newest.file.is_some(),
     })
 }
 
 /// What to say when the app's own code failed while it kept running.
 pub fn stopped(note: &dto::CrashNote) -> Banner {
-    let saved = if note.file.is_some() {
-        "A report was saved on this Mac; it goes nowhere unless you send it."
+    let hint = if note.file.is_some() {
+        t("crash.stopped_hint_saved")
     } else {
-        "A report could not be saved."
+        t("crash.stopped_hint_unsaved")
     };
     Banner {
-        title: format!(
-            "Something inside open-mtp-client stopped working ({}).",
-            when(note.at_ms)
-        ),
-        hint: format!(
-            "The app is still running, but what it was doing may not have finished. If a pane or a dialog seems stuck, close it, or quit and open the app again. {saved}"
-        ),
+        title: tf("crash.stopped_title", &[("when", &when(note.at_ms))]),
+        hint: hint.to_owned(),
         can_show: note.file.is_some(),
     }
 }

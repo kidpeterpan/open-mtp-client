@@ -14,6 +14,7 @@ use super::handler::{Message, Service};
 use super::request::{ManyField, ManyMode, Request};
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::format::format_count;
+use crate::i18n::{count, t, tf};
 
 /// Rows of new names the dialog shows: enough to see the pattern, never a
 /// row per item of a big selection.
@@ -112,38 +113,39 @@ impl Many {
 /// Why a new name is held back, in a few words.
 pub fn problem_words(problem: dto::RenameProblem) -> &'static str {
     match problem {
-        dto::RenameProblem::Invalid(dto::NameProblem::Empty) => "no name",
-        dto::RenameProblem::Invalid(dto::NameProblem::IllegalCharacters) => {
-            "has a character names can't have"
+        dto::RenameProblem::Invalid(dto::NameProblem::Empty) => {
+            t("explorer.rename_many.problem_empty")
         }
-        dto::RenameProblem::Invalid(dto::NameProblem::Reserved) => "not a name",
-        dto::RenameProblem::Taken => "taken in this folder",
-        dto::RenameProblem::Twice => "given to two items",
+        dto::RenameProblem::Invalid(dto::NameProblem::IllegalCharacters) => {
+            t("explorer.rename_many.problem_illegal")
+        }
+        dto::RenameProblem::Invalid(dto::NameProblem::Reserved) => {
+            t("explorer.rename_many.problem_reserved")
+        }
+        dto::RenameProblem::Taken => t("explorer.rename_many.problem_taken"),
+        dto::RenameProblem::Twice => t("explorer.rename_many.problem_twice"),
     }
 }
 
 /// What the dialog says under the preview: how many change, or why none can.
 pub fn summary(many: &Many) -> String {
     if many.pattern().is_none() {
-        return "Start at a whole number.".to_owned();
+        return t("explorer.rename_many.summary_number").to_owned();
     }
     let held = many.plan.iter().filter(|r| r.problem.is_some()).count();
     let changes = many.plan.iter().filter(|r| r.changes()).count();
     match (held, changes) {
-        (0, 0) => "Nothing would change yet.".to_owned(),
-        (0, n) => format!("{} will be renamed.", items(n)),
-        (n, _) => format!(
-            "{} can't be renamed so: change the pattern to rename any.",
-            items(n)
+        (0, 0) => t("explorer.rename_many.summary_nothing").to_owned(),
+        (0, n) => tf(
+            "explorer.rename_many.summary_renamed",
+            &[("items", &items(n))],
         ),
+        (n, _) => tf("explorer.rename_many.summary_held", &[("items", &items(n))]),
     }
 }
 
-fn items(n: usize) -> String {
-    match n {
-        1 => "1 item".to_owned(),
-        n => format!("{} items", format_count(n)),
-    }
+fn items(number: usize) -> String {
+    count("text.items", number, &[])
 }
 
 /// The rows to show: the held-back ones first (they are what needs fixing),
@@ -161,7 +163,10 @@ pub fn preview(plan: &[dto::Renaming]) -> (Vec<&dto::Renaming>, usize) {
 
 /// "Rename 12 items".
 pub fn title(many: &Many) -> String {
-    format!("Rename {}", items(many.items.len()))
+    tf(
+        "explorer.rename_many.title",
+        &[("items", &items(many.items.len()))],
+    )
 }
 
 /// How a run of renames went.
@@ -215,18 +220,33 @@ pub async fn rename_each(
 pub fn notice(outcome: &Outcome, asked: usize) -> super::response::NoticeResponse {
     let renamed = outcome.done.len();
     let title = if renamed == asked {
-        format!("Renamed {}", items(renamed))
+        tf(
+            "explorer.rename_many.notice_all",
+            &[("items", &items(renamed))],
+        )
     } else {
-        format!("Renamed {} of {}", format_count(renamed), items(asked))
+        tf(
+            "explorer.rename_many.notice_some",
+            &[("done", &format_count(renamed)), ("items", &items(asked))],
+        )
     };
     let mut details: Vec<String> = outcome
         .failures
         .iter()
         .take(3)
-        .map(|(name, error)| format!("“{name}”: {}", error.title))
+        .map(|(name, error)| {
+            tf(
+                "explorer.paste.failure_line",
+                &[("name", name), ("reason", &error.title)],
+            )
+        })
         .collect();
     if outcome.failures.len() > 3 {
-        details.push(format!("and {} more", outcome.failures.len() - 3));
+        details.push(count(
+            "explorer.paste.more",
+            outcome.failures.len() - 3,
+            &[],
+        ));
     }
     if let Some(stopped) = &outcome.stopped {
         details.push(stopped.title.clone());
@@ -258,22 +278,37 @@ pub fn fields<'a>(many: &'a Many, busy: bool, first: Id) -> Element<'a, Message>
     };
     let inputs: Element<'a, Message> = match many.mode {
         ManyMode::Replace => row![
-            input("Find", &many.find, ManyField::Find).id(first),
-            input("Replace with", &many.with, ManyField::With),
+            input(t("explorer.rename_many.find"), &many.find, ManyField::Find).id(first),
+            input(
+                t("explorer.rename_many.replace_with"),
+                &many.with,
+                ManyField::With,
+            ),
         ]
         .spacing(8)
         .into(),
         ManyMode::Add => column![
-            input("Text to add", &many.text, ManyField::Text).id(first),
+            input(
+                t("explorer.rename_many.text_to_add"),
+                &many.text,
+                ManyField::Text,
+            )
+            .id(first),
             row![
-                radio("before the name", false, Some(many.at_end), |end| send(
-                    Request::RenameAtEnd(end)
-                ))
+                radio(
+                    t("explorer.rename_many.before"),
+                    false,
+                    Some(many.at_end),
+                    |end| send(Request::RenameAtEnd(end))
+                )
                 .size(14)
                 .text_size(13),
-                radio("after the name", true, Some(many.at_end), |end| send(
-                    Request::RenameAtEnd(end)
-                ))
+                radio(
+                    t("explorer.rename_many.after"),
+                    true,
+                    Some(many.at_end),
+                    |end| send(Request::RenameAtEnd(end))
+                )
                 .size(14)
                 .text_size(13),
             ]
@@ -282,8 +317,18 @@ pub fn fields<'a>(many: &'a Many, busy: bool, first: Id) -> Element<'a, Message>
         .spacing(8)
         .into(),
         ManyMode::Number => row![
-            input("Name", &many.base, ManyField::Base).id(first),
-            container(input("Start at", &many.start, ManyField::Start)).width(90),
+            input(
+                t("explorer.editor.name_placeholder"),
+                &many.base,
+                ManyField::Base,
+            )
+            .id(first),
+            container(input(
+                t("explorer.rename_many.start_at"),
+                &many.start,
+                ManyField::Start,
+            ))
+            .width(90),
         ]
         .spacing(8)
         .into(),
@@ -293,9 +338,12 @@ pub fn fields<'a>(many: &'a Many, busy: bool, first: Id) -> Element<'a, Message>
     let mut rows = column![].spacing(3);
     for renaming in shown {
         let new = match renaming.problem {
-            Some(problem) => text(format!("{} — {}", renaming.to, problem_words(problem)))
-                .size(12)
-                .style(text::danger),
+            Some(problem) => text(tf(
+                "explorer.rename_many.problem_line",
+                &[("name", &renaming.to), ("problem", problem_words(problem))],
+            ))
+            .size(12)
+            .style(text::danger),
             None => text(&renaming.to).size(12),
         };
         rows = rows.push(
@@ -312,25 +360,27 @@ pub fn fields<'a>(many: &'a Many, busy: bool, first: Id) -> Element<'a, Message>
     }
     if left > 0 {
         rows = rows.push(
-            text(format!("and {} more", format_count(left)))
+            text(count("explorer.paste.more", left, &[]))
                 .size(12)
                 .style(text::secondary),
         );
     }
     let status = match many.done {
-        Some(done) => format!(
-            "Renaming {} of {}…",
-            format_count(done),
-            format_count(many.renames_planned())
+        Some(done) => tf(
+            "explorer.rename_many.renaming",
+            &[
+                ("done", &format_count(done)),
+                ("total", &format_count(many.renames_planned())),
+            ],
         ),
         None => summary(many),
     };
 
     column![
         row![
-            mode("Replace text", ManyMode::Replace),
-            mode("Add text", ManyMode::Add),
-            mode("Name and number", ManyMode::Number),
+            mode(t("explorer.rename_many.mode_replace"), ManyMode::Replace),
+            mode(t("explorer.rename_many.mode_add"), ManyMode::Add),
+            mode(t("explorer.rename_many.mode_number"), ManyMode::Number),
         ]
         .spacing(14),
         inputs,

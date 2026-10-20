@@ -7,7 +7,8 @@
 
 use internal::dto::Version;
 
-/// One release: its version and what it brought, a line each.
+use crate::i18n::key;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Release {
     pub version: &'static str,
@@ -18,73 +19,73 @@ pub struct Release {
 pub const RELEASES: &[Release] = &[Release {
     version: "0.1.0",
     notes: &[
-        "Copy between your phone and your Mac in two panes, by button, ⌘C and ⌘V, or by dragging from one pane to the other.",
-        "Moves that never lose a file: each original is removed only once its copy is checked.",
-        "Transfers that finish: they skip what is already there, resume where they stopped, and end with a count of what arrived.",
-        "Search the whole phone, import new photos into folders by day, month or year, and mirror a folder either way.",
-        "Quick Look with Space, Get Info with ⌘I, and a filter as you type with ⌘F.",
-        "Folders of thousands of photos stay quick: lists, grids with thumbnails, and a lasso to select.",
-        "When the phone can't be reached, the app says which app is holding it and offers to quit it.",
-        "A progress bar on the Dock icon, and a notification when transfers end while you are in another app.",
-        "Your Mac stays awake while files copy, so a long transfer left overnight finishes.",
-        "A real menu bar: every command in File, Edit, View, Go, Window and Help, with its shortcut, greyed out when it can't be used.",
-        "The window opens where you left it, at the size you left it, and each pane keeps the column it was sorted by.",
-        "Back and forward in each pane with ⌘[ and ⌘], the mouse's side buttons or the ‹ › buttons; going back up selects the folder you came from.",
-        "Type the start of a name to jump to it, as in Finder, in any language.",
-        "Help and Get Info say what your phone can do (copy or move by itself, resume past 4 GB, thumbnails), and Troubleshooting can time how fast it reads a folder.",
-        "When macOS won't let the app into a folder, one click opens the right page of System Settings, and the folder opens when you come back.",
-        "Files show their kind at a glance: a colour for photos, videos, music, documents, archives and Android apps, and a badge on tiles without a thumbnail.",
-        "Undo with ⌘Z: the last rename, move or new folder, on the Mac or on the phone.",
-        "Drag a column's edge in the list to make it wider or narrower; each pane remembers its widths, and a double-click on the edge puts them back.",
-        "A transfer that won't fit is refused before it starts, saying how much it needs and how much is free, on the Mac or on the phone.",
-        "Each pane opens where you left it: the Mac's folder, and each phone's own folder on each of its storages.",
-        "A sound when transfers finish, if you want one (Settings): the Mac's Glass when all went, Basso when something didn't.",
-        "Pause a transfer and resume it later: a download carries on from the part it had, an upload skips what the phone already has whole, and nothing else in the queue starts while it waits.",
-        "Phone thumbnails are kept on your Mac: a folder of photos opened again, even after quitting, shows its pictures at once without asking the phone.",
-        "Rename several items at once: replace text, add text, or give them one name and a number, with every new name shown before anything changes and one ⌘Z to undo the lot.",
-        "Go to Folder (⇧⌘G) in either pane: type a path, pick from the folders it offers, and go.",
-        "Click Kind in the list's header to sort by kind: folders, photos, videos, music, documents, archives, each grouped by type.",
-        "Pick a kind beside the filter (Photos, Videos, Music…) to see only those files; ⌘A then selects just them.",
-        "Import can free up the phone: tick \"Remove them from the phone once imported\" and each photo whose copy is checked is removed afterwards, saying how much room that made.",
-        "New Folder with Selection (⌃⌘N): the selected items go into a new folder, whose name is ready to type; one ⌘Z puts them back.",
-        "Copy Path (⌥⌘C): the selected items' paths as text, one per line.",
-        "What fills the phone: in the phone search, click Size to list every file, largest first; Name and Modified order the results too.",
-        "View › Calculate Folder Sizes: each folder's Size shows what is in it, counted in the background, so sorting by Size puts the biggest folders first.",
-        "A command-line tool for scripts (open-mtp-client-cli): list, pull and push with the same checks as the window, plain or JSON.",
-        "The Mac's disks in the sidebar show how full they are, as the phone's storages do.",
-        "The phone's usual places in the sidebar: Camera, Screenshots, Downloads, WhatsApp media and Music, whichever the phone has, one click away.",
-        "Spring-loaded folders: hold a drag over a folder for a moment (or press Space) and it opens, in either pane, so items go deep inside in one drag; let go elsewhere or press Esc and it closes again.",
-        "Go › Recent Folders: the last ten folders shown on the Mac and on each phone, kept between launches; pick one to go back, or Clear Menu.",
-        "Share… (right-click, or the File menu): send files through AirDrop, Messages, Mail or Notes, from the Mac or straight from the phone.",
-        "Pick a date beside the filter (Today, Last 7 days, This year, Over a year ago…) in either pane or the phone search: this week's photos are one pick, then ⌘A. In a narrow pane the filter gets a row of its own.",
-        "Saved mirrors: \"Save This Mirror\" keeps a pair of folders under the phone in the sidebar; a click compares them again, and Mirror runs it.",
-        "The sidebar says how fast the phone's USB link is (USB 2 or USB 3), and a slow copy says when a USB 2 cable or port is why.",
-        "Replace older: when a copy to the phone meets names already there, replace a file only with a newer one and leave the rest (also --replace-older in the command-line tool).",
-        "Bigger or smaller tiles in Grid view: ⌘+ and ⌘− (View › Make Tiles Bigger / Smaller), remembered for each pane, with sharp thumbnails at every size.",
-        "When macOS's own camera services grab the phone, the app frees it by itself and opens it straight away, instead of asking.",
-        "Thumbnails the right way up: portrait photos show upright in the grid, from the Mac or the phone.",
-        "Long names are cut in the middle, so the end and the extension stay in sight (IMG_2026…2133.jpg); hover to see the whole name.",
-        "Downloading onto names your Mac already has asks first, as copying to the phone does: Skip, Keep both, Replace older or Replace (the old file goes to the Trash once the new one is safely in).",
-        "Drop onto the sidebar: drag items onto a place, a pin, a phone storage or one of the phone's usual places to put them there (moved on the same disk, copied elsewhere; ⌥ and ⌘ turn that round), and hold a moment to open it in its pane. Internal storage to SD card in one drag.",
-        "Finder's keys for long lists: Home and End (or ⌥↑ and ⌥↓) select the first or last item, Page Up and Page Down move a screen, each with ⇧ to select the run; ⇧⌘. shows hidden files; ⇧⌘H, ⇧⌘D and ⌥⌘L take the Mac pane to Home, the Desktop and Downloads (also in the Go menu).",
-        "A transfer cut off by a pulled cable or a locked phone waits instead of failing: plug the phone back in and unlock it (or Reconnect) and it carries on by itself from where it stopped, without starting over.",
-        "Edit › Select Not in Other Pane (or right-click): selects the files the other pane's folder doesn't have yet, so only the new photos get copied; Select Also in Other Pane selects what is already there, to free up the phone.",
-        "Details on a finished download, move or import: what became of every file (copied and checked, already there, replaced, skipped, failed and why, the original removed or kept), with Save Report (a spreadsheet file beside the copies) and Copy.",
-        "A finished transfer says how long it took and how fast it went (“Took 1 min 11 s · 29.6 MB/s on average”), and when a slow USB 2 link was why.",
-        "Quitting (⌘Q, the menu, or the window's close button) while a transfer runs asks first, and Stop and Quit stops it safely, so a download carries on from where it stopped next time.",
-        "Copying to a disk that can't be written (an NTFS drive, a locked SD card) is refused before anything moves, and on a FAT32 disk each file of 4 GB or more is named and left out while the rest copy, instead of failing after gigabytes.",
-        "Details on a finished upload too: what became of every file sent to the phone (sent, read back, already there, kept as the phone had it, replaced, failed and why) and, for a move, whether each original went to the Trash; Copy puts it on the clipboard.",
-        "The command-line tool grows: info, mkdir -p, rm (asks first, --yes in scripts), mv, pull of several paths, --move both ways, progress on stderr, and ctrl-c that stops a copy safely (exit 130).",
-        "The command-line tool now comes inside the app: Help › About shows where, with a line to copy that puts it in your Terminal's path.",
-        "Get Info on a folder or a storage shows what fills it, by kind, with a bar; a click on Videos or Photos finds them, the biggest first.",
-        "Use Groups (⌃⌘0), as in Finder: each pane can show its files under Today, Yesterday, each month and year (or by kind or size), and a click on a header selects that group, so “the photos from March” is one click.",
-        "Deleting from the phone can keep a copy in the Mac's Trash first (Settings, off unless you turn it on, up to 2 GB a delete): only what was copied whole is deleted.",
-        "Edit a phone file in its Mac app: right-click › Edit on Mac. Once you save it, Send to Phone puts it back (beside the phone's copy, if that changed meanwhile), and edits not yet sent are still there after a restart.",
-        "Free Up Space…, under the phone in the sidebar: copies of the same file (read in full to be sure, the oldest kept), photos already imported and still on this Mac, and a way to the biggest files.",
-        "On an Android phone, Android/data and Android/obb say why they look empty: Android keeps apps' own folders from computers.",
-        "Check copies byte for byte: select files in one pane and choose Edit › Check Contents Against Other Pane. Each phone file is read and compared with the Mac's, nothing is changed, and Details says which are identical, which differ and from which byte.",
-        "When your phone won't open because something has it, the app asks macOS who and names that program, instead of every app that happens to run; it now knows Garmin Express, MightyText, Commander One, MacDroid, DaVinci Resolve and Nikon Transfer too.",
-        "Transfers not finished when the app last quit or crashed are offered again (a phone's when that phone opens): Continue carries on from where they stopped, Discard forgets them.",
+        key("whatsnew.0_1_0.1"),
+        key("whatsnew.0_1_0.2"),
+        key("whatsnew.0_1_0.3"),
+        key("whatsnew.0_1_0.4"),
+        key("whatsnew.0_1_0.5"),
+        key("whatsnew.0_1_0.6"),
+        key("whatsnew.0_1_0.7"),
+        key("whatsnew.0_1_0.8"),
+        key("whatsnew.0_1_0.9"),
+        key("whatsnew.0_1_0.10"),
+        key("whatsnew.0_1_0.11"),
+        key("whatsnew.0_1_0.12"),
+        key("whatsnew.0_1_0.13"),
+        key("whatsnew.0_1_0.14"),
+        key("whatsnew.0_1_0.15"),
+        key("whatsnew.0_1_0.16"),
+        key("whatsnew.0_1_0.17"),
+        key("whatsnew.0_1_0.18"),
+        key("whatsnew.0_1_0.19"),
+        key("whatsnew.0_1_0.20"),
+        key("whatsnew.0_1_0.21"),
+        key("whatsnew.0_1_0.22"),
+        key("whatsnew.0_1_0.23"),
+        key("whatsnew.0_1_0.24"),
+        key("whatsnew.0_1_0.25"),
+        key("whatsnew.0_1_0.26"),
+        key("whatsnew.0_1_0.27"),
+        key("whatsnew.0_1_0.28"),
+        key("whatsnew.0_1_0.29"),
+        key("whatsnew.0_1_0.30"),
+        key("whatsnew.0_1_0.31"),
+        key("whatsnew.0_1_0.32"),
+        key("whatsnew.0_1_0.33"),
+        key("whatsnew.0_1_0.34"),
+        key("whatsnew.0_1_0.35"),
+        key("whatsnew.0_1_0.36"),
+        key("whatsnew.0_1_0.37"),
+        key("whatsnew.0_1_0.38"),
+        key("whatsnew.0_1_0.39"),
+        key("whatsnew.0_1_0.40"),
+        key("whatsnew.0_1_0.41"),
+        key("whatsnew.0_1_0.42"),
+        key("whatsnew.0_1_0.43"),
+        key("whatsnew.0_1_0.44"),
+        key("whatsnew.0_1_0.45"),
+        key("whatsnew.0_1_0.46"),
+        key("whatsnew.0_1_0.47"),
+        key("whatsnew.0_1_0.48"),
+        key("whatsnew.0_1_0.49"),
+        key("whatsnew.0_1_0.50"),
+        key("whatsnew.0_1_0.51"),
+        key("whatsnew.0_1_0.52"),
+        key("whatsnew.0_1_0.53"),
+        key("whatsnew.0_1_0.54"),
+        key("whatsnew.0_1_0.55"),
+        key("whatsnew.0_1_0.56"),
+        key("whatsnew.0_1_0.57"),
+        key("whatsnew.0_1_0.58"),
+        key("whatsnew.0_1_0.59"),
+        key("whatsnew.0_1_0.60"),
+        key("whatsnew.0_1_0.61"),
+        key("whatsnew.0_1_0.62"),
+        key("whatsnew.0_1_0.63"),
+        key("whatsnew.0_1_0.64"),
+        key("whatsnew.0_1_0.65"),
+        key("whatsnew.0_1_0.66"),
+        key("whatsnew.0_1_0.67"),
     ],
 }];
 
@@ -122,10 +123,38 @@ fn releases_between(
 
 #[cfg(test)]
 mod tests {
+    use internal::dto::Language;
+
     use super::*;
 
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap()
+    }
+
+    fn notes_key(version: &str, number: usize) -> String {
+        format!("whatsnew.{}.{number}", version.replace('.', "_"))
+    }
+
+    #[test]
+    fn every_release_has_its_notes_in_all_four_languages() {
+        let catalogs = crate::i18n::embedded();
+        let mut missing = Vec::new();
+
+        for release in RELEASES {
+            for number in 1..=release.notes.len() {
+                let key = notes_key(release.version, number);
+                for language in Language::ALL {
+                    if !catalogs.has_own(language, &key) {
+                        missing.push(format!("{language:?} {key}"));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "notes are written once per language in the catalog: {missing:#?}"
+        );
     }
 
     #[test]

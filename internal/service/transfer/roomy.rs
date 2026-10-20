@@ -7,8 +7,8 @@ use std::sync::Arc;
 use super::Service;
 use super::room::Room;
 use crate::dto::{
-    Cancel, Conflict, DownloadRequest, Error, MirrorDirection, MirrorRequest, Paste, PasteRequest,
-    UploadRequest,
+    Cancel, Conflict, Disk, DownloadRequest, Error, MirrorDirection, MirrorRequest, Paste,
+    PasteRequest, UploadRequest,
 };
 use crate::service::device;
 use crate::service::explorer;
@@ -70,7 +70,7 @@ impl Phone {
 }
 
 fn mac_with(free: u64) -> Room {
-    Room::free(free, "on your Mac's disk")
+    Room::free(free, Disk::MacDisk)
 }
 
 #[tokio::test]
@@ -87,7 +87,7 @@ async fn a_download_that_would_not_fit_on_the_mac_writes_nothing() {
         Error::NotEnoughRoom {
             needed: 50 * KIB,
             free: 45 * KIB,
-            place: "on your Mac's disk".into(),
+            disk: Disk::MacDisk,
         }
     );
     assert_eq!(
@@ -144,13 +144,9 @@ async fn an_upload_that_would_not_fit_on_the_phone_sends_nothing() {
         .await;
 
     match refused {
-        Err(Error::NotEnoughRoom {
-            needed,
-            free,
-            place,
-        }) => {
+        Err(Error::NotEnoughRoom { needed, free, disk }) => {
             assert_eq!((needed, free), (30 * KIB, 20 * KIB));
-            assert_eq!(place, "on the phone's “Internal shared storage”");
+            assert_eq!(disk, Disk::PhoneStorage("Internal shared storage".into()));
         }
         other => panic!("refused for room, not {other:?}"),
     }
@@ -305,18 +301,18 @@ async fn a_retried_move_through_the_mac_finds_what_it_sent_and_needs_no_room_for
 // What the Mac's disk can take besides room: a disk that can't be written,
 // and FAT32's 4 GB per file.
 
-fn mac_kind(read_only: bool, most_per_file: Option<u64>, place: &str) -> Room {
+fn mac_kind(read_only: bool, most_per_file: Option<u64>, volume: &str) -> Room {
     Room {
         read_only,
         most_per_file,
-        ..Room::free(1 << 40, place)
+        ..Room::free(1 << 40, Disk::Volume(volume.to_owned()))
     }
 }
 
 #[tokio::test]
 async fn a_read_only_disk_is_refused_before_anything_is_written() {
     let p = phone(1 << 30).await;
-    let transfer = p.transfer().with_room(mac_kind(true, None, "on “BACKUP”"));
+    let transfer = p.transfer().with_room(mac_kind(true, None, "BACKUP"));
 
     let refused = transfer
         .download(&p.download(&["a.jpg", "b.jpg"]), &Cancel::new(), |_| {})
@@ -324,7 +320,7 @@ async fn a_read_only_disk_is_refused_before_anything_is_written() {
 
     assert_eq!(
         refused.unwrap_err(),
-        Error::VolumeReadOnly("on “BACKUP”".into())
+        Error::VolumeReadOnly(Disk::Volume("BACKUP".into()))
     );
     assert_eq!(fs::read_dir(p.mac.path()).unwrap().count(), 0);
 }
@@ -341,7 +337,7 @@ async fn on_fat32_a_file_of_4_gb_or_more_is_left_out_by_name_and_the_rest_go() {
     mtp_rs::rescan_virtual_device(&serial);
     let transfer = p
         .transfer()
-        .with_room(mac_kind(false, Some(0xFFFF_FFFF), "on “KINGSTON”"));
+        .with_room(mac_kind(false, Some(0xFFFF_FFFF), "KINGSTON"));
 
     let summary = transfer
         .download(
@@ -358,7 +354,7 @@ async fn on_fat32_a_file_of_4_gb_or_more_is_left_out_by_name_and_the_rest_go() {
     assert_eq!(summary.failures[0].label, "VID.mp4");
     assert_eq!(
         summary.failures[0].error,
-        Error::TooBigForVolume("on “KINGSTON”".into())
+        Error::TooBigForVolume(Disk::Volume("KINGSTON".into()))
     );
     assert!(!p.mac.path().join("VID.mp4").exists());
     let mut names: Vec<String> = fs::read_dir(p.mac.path())
@@ -380,7 +376,7 @@ async fn on_fat32_a_selection_of_only_big_files_says_so_and_copies_nothing() {
     mtp_rs::rescan_virtual_device(&serial);
     let transfer = p
         .transfer()
-        .with_room(mac_kind(false, Some(0xFFFF_FFFF), "on “KINGSTON”"));
+        .with_room(mac_kind(false, Some(0xFFFF_FFFF), "KINGSTON"));
 
     let refused = transfer
         .download(&p.download(&["VID.mp4"]), &Cancel::new(), |_| {})
@@ -388,7 +384,7 @@ async fn on_fat32_a_selection_of_only_big_files_says_so_and_copies_nothing() {
 
     assert_eq!(
         refused.unwrap_err(),
-        Error::TooBigForVolume("on “KINGSTON”".into()),
+        Error::TooBigForVolume(Disk::Volume("KINGSTON".into())),
         "one file, so the whole download's answer"
     );
 }
@@ -410,7 +406,7 @@ async fn a_file_too_big_for_fat32_needs_no_room_there_since_it_isnt_copied() {
     let p = phone_with_video().await;
     let fat = Room {
         most_per_file: Some(0xFFFF_FFFF),
-        ..Room::free(60 * KIB, "on “KINGSTON”")
+        ..Room::free(60 * KIB, Disk::Volume("KINGSTON".into()))
     };
 
     let summary = p
@@ -456,13 +452,13 @@ async fn a_part_left_of_a_file_too_big_for_fat32_is_not_carried_on_either() {
 
     let refused = p
         .transfer()
-        .with_room(mac_kind(false, Some(0xFFFF_FFFF), "on “KINGSTON”"))
+        .with_room(mac_kind(false, Some(0xFFFF_FFFF), "KINGSTON"))
         .download(&p.download(&["VID.mp4"]), &Cancel::new(), |_| {})
         .await;
 
     assert_eq!(
         refused.unwrap_err(),
-        Error::TooBigForVolume("on “KINGSTON”".into())
+        Error::TooBigForVolume(Disk::Volume("KINGSTON".into()))
     );
     assert_eq!(
         fs::metadata(&part).unwrap().len(),

@@ -14,6 +14,7 @@ use internal::dto::{self, MirrorDirection};
 use super::mapper;
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::i18n::{english_only, t, tf};
 
 /// Told how many items of the phone folder have been read so far.
 pub type Seen = Box<dyn Fn(usize) + Send + Sync>;
@@ -299,6 +300,14 @@ impl Handler {
         }
     }
 
+    pub fn language_changed(&mut self) {
+        if let Some(dialog) = self.dialog.as_mut()
+            && let Preview::Failed(error) = &mut dialog.preview
+        {
+            *error = error.reworded();
+        }
+    }
+
     /// "Save This Mirror", or "Saved" once it is; nothing for a phone
     /// without a serial (a saved mirror is shown under its phone).
     fn save_button<'a>(&self, dialog: &'a Dialog) -> Element<'a, Message> {
@@ -306,12 +315,12 @@ impl Handler {
             return space().into();
         }
         if dialog.saved {
-            return text("Saved in the sidebar")
+            return text(t("mirror.saved"))
                 .size(13)
                 .style(text::secondary)
                 .into();
         }
-        button(text("Save This Mirror"))
+        button(text(t("mirror.save")))
             .style(button::text)
             .on_press(Message::Request(Request::Save))
             .into()
@@ -329,13 +338,12 @@ impl Handler {
             .size(16)
             .text_size(14)
         };
-        let target = mapper::target_name(dialog.direction);
         let side = |label, path: String| {
             row![
                 text(label)
                     .size(13)
                     .style(text::secondary)
-                    .width(Length::Fixed(56.0)),
+                    .width(Length::Fixed(100.0)),
                 text(path).size(14),
             ]
             .spacing(8)
@@ -347,22 +355,14 @@ impl Handler {
             extras = extras.push(
                 checkbox(dialog.remove_extras)
                     .label(match dialog.direction {
-                        MirrorDirection::ToMac => {
-                            "Also remove what is only on the Mac (to the Trash)"
-                        }
-                        MirrorDirection::ToPhone => {
-                            "Also remove what is only on the phone (deleted for good)"
-                        }
+                        MirrorDirection::ToMac => t("mirror.remove_to_mac"),
+                        MirrorDirection::ToPhone => t("mirror.remove_to_phone"),
                     })
                     .text_size(14)
                     .on_toggle(move |on| send(Request::RemoveExtras(on))),
             );
         } else {
-            extras = extras.push(
-                text("What is only on the Mac is kept: removing it is not offered for your home folder or the disk itself. Open a folder made for the mirror on the Mac side.")
-                    .size(12)
-                    .style(text::secondary),
-            );
+            extras = extras.push(text(t("mirror.mac_kept")).size(12).style(text::secondary));
         }
 
         let status: Element<'_, Message> = match &dialog.preview {
@@ -380,14 +380,26 @@ impl Handler {
                 .spacing(4);
                 let samples = &preview.samples;
                 for (kind, sample, total) in [
-                    ("New", &samples.new, preview.new_files),
-                    ("Changed", &samples.changed, preview.changed_files),
-                    ("Only there", &samples.extras, preview.extras),
-                    ("Left alone", &samples.conflicts, preview.conflicts),
+                    (t("mirror.sample_new"), &samples.new, preview.new_files),
+                    (
+                        t("mirror.sample_changed"),
+                        &samples.changed,
+                        preview.changed_files,
+                    ),
+                    (
+                        t("mirror.sample_only_there"),
+                        &samples.extras,
+                        preview.extras,
+                    ),
+                    (
+                        t("mirror.sample_left_alone"),
+                        &samples.conflicts,
+                        preview.conflicts,
+                    ),
                 ] {
                     if let Some(line) = mapper::sample_line(sample, total) {
                         lines = lines.push(
-                            text(format!("{kind}: {line}"))
+                            text(tf("mirror.sample_line", &[("kind", kind), ("line", &line)]))
                                 .size(12)
                                 .style(text::secondary),
                         );
@@ -404,39 +416,37 @@ impl Handler {
         };
 
         let content = column![
-            text("Mirror a folder").size(20),
-            text(format!(
-                "Makes {target}'s folder hold what the other holds: what is new is copied, what changed is replaced."
-            ))
-            .size(13)
-            .style(text::secondary),
+            text(t("mirror.title")).size(20),
+            text(mapper::explanation(dialog.direction))
+                .size(13)
+                .style(text::secondary),
             rule::horizontal(1),
-            side("Phone", format!("{} › {}", dialog.storage, dialog.phone_folder)),
-            side("Mac", dialog.shown_mac.clone()),
-            text("To mirror other folders, open them in the two panes first.")
+            side(
+                t("mirror.side_phone"),
+                format!("{} › {}", dialog.storage, dialog.phone_folder)
+            ),
+            side(english_only("Mac"), dialog.shown_mac.clone()),
+            text(t("mirror.other_folders"))
                 .size(12)
                 .style(text::secondary),
             row![
-                direction("Phone → Mac", MirrorDirection::ToMac),
-                direction("Mac → Phone", MirrorDirection::ToPhone),
+                direction(t("mirror.direction_to_mac"), MirrorDirection::ToMac),
+                direction(t("mirror.direction_to_phone"), MirrorDirection::ToPhone),
             ]
             .spacing(16),
             extras,
             rule::horizontal(1),
             status,
-            text(match dialog.direction {
-                MirrorDirection::ToMac => "Hidden files are left alone on both sides. A replaced file's old version goes to the Trash.",
-                MirrorDirection::ToPhone => "Hidden files are left alone on both sides. A changed file on the phone is deleted and sent again.",
-            })
-            .size(12)
-            .style(text::secondary),
+            text(mapper::hidden_note(dialog.direction))
+                .size(12)
+                .style(text::secondary),
             row![
                 self.save_button(dialog),
                 space::horizontal(),
-                button(text("Cancel"))
+                button(text(t("label.cancel")))
                     .style(button::secondary)
                     .on_press(send(Request::Close)),
-                button(text("Mirror"))
+                button(text(t("mirror.start")))
                     .style(button::primary)
                     .on_press_maybe(self.request().map(|_| send(Request::Start))),
             ]
@@ -489,6 +499,40 @@ mod tests {
 
     fn shows(handler: &Handler, words: &str) -> bool {
         iced_test::simulator(handler.view()).find(words).is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_change_of_language_words_the_open_dialog_and_a_failed_comparison_again() {
+        use internal::dto::Language;
+
+        let (mut handler, _) = opened(FakeMirror::default()).await;
+        assert!(shows(&handler, "Mirror a folder"));
+        assert!(shows(&handler, "2 files to copy (2.0 KB)"));
+
+        crate::i18n::set_language(Language::Japanese);
+        handler.language_changed();
+
+        for key in [
+            "mirror.title",
+            "mirror.other_folders",
+            "mirror.start",
+            "label.cancel",
+        ] {
+            assert!(shows(&handler, crate::i18n::t(key)), "{key}");
+        }
+        assert!(!shows(&handler, "Mirror a folder"));
+        assert!(!shows(&handler, "2 files to copy (2.0 KB)"));
+        assert!(handler.request().is_some(), "the choice stays");
+
+        crate::i18n::set_language(Language::English);
+        let (mut failed, _) = opened(FakeMirror::answering(Err(dto::Error::Timeout))).await;
+        let english = error::to_error_response(dto::Error::Timeout).title;
+        assert!(shows(&failed, &english));
+        crate::i18n::set_language(Language::Thai);
+        failed.language_changed();
+        let said = error::to_error_response(dto::Error::Timeout).title;
+        assert_ne!(said, english);
+        assert!(shows(&failed, &said));
     }
 
     #[tokio::test]

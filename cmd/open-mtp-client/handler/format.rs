@@ -2,23 +2,36 @@
 
 use chrono::{Datelike, NaiveDate};
 use internal::dto::{
-    Abilities, DateRange, Day, DaySpan, FileKind, ReadTiming, Timestamp, UsbSpeed,
+    Abilities, DateRange, Day, DaySpan, FileKind, Language, ReadTiming, Timestamp, UsbSpeed,
 };
 
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+use crate::i18n::{count_in, english_only, key, language, t, tf, tf_in};
+
+const MONTH_KEYS: [&str; 12] = [
+    key("month.1"),
+    key("month.2"),
+    key("month.3"),
+    key("month.4"),
+    key("month.5"),
+    key("month.6"),
+    key("month.7"),
+    key("month.8"),
+    key("month.9"),
+    key("month.10"),
+    key("month.11"),
+    key("month.12"),
 ];
 
 /// A kind of file, as the search and the pane's filter offer it; `None` is
 /// every kind.
 pub fn kind_label(kind: Option<FileKind>) -> &'static str {
     match kind {
-        None => "All",
-        Some(FileKind::Photo) => "Photos",
-        Some(FileKind::Video) => "Videos",
-        Some(FileKind::Music) => "Music",
-        Some(FileKind::Document) => "Documents",
-        Some(FileKind::Archive) => "Archives",
+        None => t("label.kind.all"),
+        Some(FileKind::Photo) => t("label.kind.photos"),
+        Some(FileKind::Video) => t("label.kind.videos"),
+        Some(FileKind::Music) => t("label.kind.music"),
+        Some(FileKind::Document) => t("label.kind.documents"),
+        Some(FileKind::Archive) => t("label.kind.archives"),
     }
 }
 
@@ -26,13 +39,13 @@ pub fn kind_label(kind: Option<FileKind>) -> &'static str {
 /// `None` is any date.
 pub fn date_label(range: Option<DateRange>) -> &'static str {
     match range {
-        None => "Any date",
-        Some(DateRange::Today) => "Today",
-        Some(DateRange::Yesterday) => "Yesterday",
-        Some(DateRange::LastWeek) => "Last 7 days",
-        Some(DateRange::LastMonth) => "Last 30 days",
-        Some(DateRange::ThisYear) => "This year",
-        Some(DateRange::OlderThanAYear) => "Over a year ago",
+        None => t("label.date.any"),
+        Some(DateRange::Today) => t("label.date.today"),
+        Some(DateRange::Yesterday) => t("label.date.yesterday"),
+        Some(DateRange::LastWeek) => t("label.date.last_week"),
+        Some(DateRange::LastMonth) => t("label.date.last_month"),
+        Some(DateRange::ThisYear) => t("label.date.this_year"),
+        Some(DateRange::OlderThanAYear) => t("label.date.older"),
     }
 }
 
@@ -91,15 +104,17 @@ pub fn link_label(link: UsbSpeed) -> &'static str {
 /// help; `None` for a fast link or one not known.
 pub fn slow_link_note(link: Option<UsbSpeed>) -> Option<String> {
     let link = link.filter(|link| link.is_slow())?;
-    let most = match link {
-        UsbSpeed::High => "about 35 MB/s",
-        UsbSpeed::Full => "about 1 MB/s",
-        _ => "well under 1 MB/s",
+    let note = match link {
+        UsbSpeed::High => key("usb.slow_note_high"),
+        UsbSpeed::Full => key("usb.slow_note_full"),
+        _ => key("usb.slow_note_low"),
     };
-    Some(format!(
-        "Connected at {} speed ({} Mb/s): {most} at most. A USB 3 cable and port would be faster.",
-        link_label(link),
-        link.megabits()
+    Some(tf(
+        note,
+        &[
+            ("link", link_label(link)),
+            ("megabits", &link.megabits().to_string()),
+        ],
     ))
 }
 
@@ -140,16 +155,16 @@ pub fn escape_odd(text: &str) -> String {
         .collect()
 }
 
+pub fn comma_list(parts: &[String]) -> String {
+    parts
+        .iter()
+        .cloned()
+        .reduce(|so_far, next| tf("text.list_next", &[("so_far", &so_far), ("next", &next)]))
+        .unwrap_or_default()
+}
+
 pub fn format_count(count: usize) -> String {
-    let digits = count.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
+    crate::i18n::grouped(count)
 }
 
 /// Decimal units, matching how phones and macOS Finder report storage.
@@ -164,53 +179,71 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 
     if unit == 0 {
-        format!("{bytes} B")
+        format!("{bytes} {}", UNITS[0])
     } else {
         format!("{value:.1} {}", UNITS[unit])
     }
+}
+
+pub fn short_month(month: u32) -> &'static str {
+    MONTH_KEYS
+        .get((month as usize).wrapping_sub(1))
+        .map_or("???", |month_key| t(month_key))
 }
 
 /// Finder-style, relative to `today`: "Today, 12:33", "Yesterday, 09:05",
 /// "3 Aug, 11:40" this year, "11 Jul 2025" before. Shown as the device wrote it
 /// when the date is not a real calendar day.
 pub fn format_timestamp(time: &Timestamp, today: NaiveDate) -> String {
-    let month = MONTHS
+    let month = MONTH_KEYS
         .get(usize::from(time.month).wrapping_sub(1))
-        .copied()
-        .unwrap_or("???");
+        .map_or("???", |month_key| t(month_key));
     let clock = format!("{:02}:{:02}", time.hour, time.minute);
+    let day = time.day.to_string();
+    let year = time.year.to_string();
 
     let Some(date) = NaiveDate::from_ymd_opt(
         i32::from(time.year),
         u32::from(time.month),
         u32::from(time.day),
     ) else {
-        return format!("{} {month} {}, {clock}", time.day, time.year);
+        return tf(
+            "date.unreal",
+            &[
+                ("day", &day),
+                ("month", month),
+                ("year", &year),
+                ("clock", &clock),
+            ],
+        );
     };
 
     if date == today {
-        format!("Today, {clock}")
+        tf("date.today", &[("clock", &clock)])
     } else if Some(date) == today.pred_opt() {
-        format!("Yesterday, {clock}")
+        tf("date.yesterday", &[("clock", &clock)])
     } else if date.year() == today.year() {
-        format!("{} {month}, {clock}", time.day)
+        tf(
+            "date.this_year",
+            &[("day", &day), ("month", month), ("clock", &clock)],
+        )
     } else {
-        format!("{} {month} {}", time.day, time.year)
+        tf(
+            "date.other_year",
+            &[("day", &day), ("month", month), ("year", &year)],
+        )
     }
 }
 
 /// "8 s", "3 min", "1 h 5 min": rounded, for estimates and elapsed time.
 pub fn format_duration(secs: u64) -> String {
     match secs {
-        0..60 => format!("{secs} s"),
-        60..3600 => format!("{} min", (secs + 30) / 60),
-        _ => {
-            let minutes = (secs + 30) / 60;
-            match minutes % 60 {
-                0 => format!("{} h", minutes / 60),
-                rest => format!("{} h {rest} min", minutes / 60),
-            }
-        }
+        0..60 => tf("duration.seconds", &[("n", &secs.to_string())]),
+        60..3600 => tf(
+            "duration.minutes",
+            &[("n", &((secs + 30) / 60).to_string())],
+        ),
+        _ => hours_and_minutes((secs + 30) / 60),
     }
 }
 
@@ -218,38 +251,46 @@ pub fn format_duration(secs: u64) -> String {
 /// "2 h 5 min" (seconds stop counting past an hour).
 pub fn format_elapsed(secs: u64) -> String {
     match secs {
-        0..60 => format!("{secs} s"),
+        0..60 => tf("duration.seconds", &[("n", &secs.to_string())]),
         60..3600 => match secs % 60 {
-            0 => format!("{} min", secs / 60),
-            rest => format!("{} min {rest} s", secs / 60),
+            0 => tf("duration.minutes", &[("n", &(secs / 60).to_string())]),
+            rest => tf(
+                "duration.minutes_seconds",
+                &[("m", &(secs / 60).to_string()), ("s", &rest.to_string())],
+            ),
         },
-        _ => {
-            let minutes = secs / 60;
-            match minutes % 60 {
-                0 => format!("{} h", minutes / 60),
-                rest => format!("{} h {rest} min", minutes / 60),
-            }
-        }
+        _ => hours_and_minutes(secs / 60),
+    }
+}
+
+fn hours_and_minutes(minutes: u64) -> String {
+    let hours = (minutes / 60).to_string();
+    match minutes % 60 {
+        0 => tf("duration.hours", &[("h", &hours)]),
+        rest => tf(
+            "duration.hours_minutes",
+            &[("h", &hours), ("m", &rest.to_string())],
+        ),
     }
 }
 
 /// What a phone can and can't do, in plain words: (can, can't).
 pub fn abilities_in_words(abilities: &Abilities) -> (Vec<&'static str>, Vec<&'static str>) {
     let resume = if abilities.partial_reads_64 {
-        (true, "resume a stopped download")
+        (true, t("ability.resume"))
     } else if abilities.partial_reads {
-        (true, "resume a stopped download under 4 GB")
+        (true, t("ability.resume_under_4gb"))
     } else {
-        (false, "resume a stopped download")
+        (false, t("ability.resume"))
     };
     let all = [
-        (abilities.copy, "copy on the phone"),
-        (abilities.moves, "move on the phone"),
-        (abilities.rename, "rename"),
+        (abilities.copy, t("ability.copy")),
+        (abilities.moves, t("ability.move")),
+        (abilities.rename, t("ability.rename")),
         resume,
-        (abilities.thumbnails, "make its own thumbnails"),
-        (abilities.prop_list, "read a folder's details at once"),
-        (abilities.events, "say when its files change"),
+        (abilities.thumbnails, t("ability.thumbnails")),
+        (abilities.prop_list, t("ability.prop_list")),
+        (abilities.events, t("ability.events")),
     ];
     let pick = |wanted: bool| {
         all.iter()
@@ -263,7 +304,7 @@ pub fn abilities_in_words(abilities: &Abilities) -> (Vec<&'static str>, Vec<&'st
 /// The operations a phone lists, by their MTP names, for a support report.
 pub fn operations_line(abilities: &Abilities) -> String {
     let yes = |on: bool| if on { "yes" } else { "no" };
-    format!(
+    english_only(format!(
         "CopyObject {}, MoveObject {}, rename {}, GetPartialObject {}, GetPartialObject64 {}, GetThumb {}, GetObjectPropList {}, events {}",
         yes(abilities.copy),
         yes(abilities.moves),
@@ -273,22 +314,39 @@ pub fn operations_line(abilities: &Abilities) -> String {
         yes(abilities.thumbnails),
         yes(abilities.prop_list),
         yes(abilities.events),
-    )
+    ))
 }
 
 /// "312 items in 1.4 s".
 pub fn format_reading(timing: &ReadTiming) -> String {
-    let items = match timing.items {
-        1 => "1 item".to_owned(),
-        n => format!("{} items", format_count(n)),
-    };
+    reading_in(language(), timing)
+}
+
+pub fn format_reading_in_english(timing: &ReadTiming) -> String {
+    reading_in(Language::English, timing)
+}
+
+fn reading_in(language: Language, timing: &ReadTiming) -> String {
+    let items = count_in(language, key("text.items"), timing.items, &[]);
     let secs = timing.took.as_secs_f64();
     let took = if secs < 1.0 {
-        format!("{} ms", timing.took.as_millis())
+        tf_in(
+            language,
+            key("duration.milliseconds"),
+            &[("n", &timing.took.as_millis().to_string())],
+        )
     } else {
-        format!("{secs:.1} s")
+        tf_in(
+            language,
+            key("duration.seconds"),
+            &[("n", &format!("{secs:.1}"))],
+        )
     };
-    format!("{items} in {took}")
+    tf_in(
+        language,
+        key("reading.line"),
+        &[("items", &items), ("took", &took)],
+    )
 }
 
 #[cfg(test)]

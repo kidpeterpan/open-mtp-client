@@ -123,6 +123,14 @@ impl Handler {
         }
     }
 
+    pub fn language_changed(&mut self) {
+        let (menus, commands) = mapper::menus();
+        self.menus = menus;
+        self.commands = commands;
+        self.installed = false;
+        self.shown = None;
+    }
+
     /// The command behind a tag: one of the menus' own, or a recent folder.
     pub fn command(&self, tag: u32) -> Option<Command> {
         match tag.checked_sub(mapper::RECENT_TAG) {
@@ -173,7 +181,7 @@ impl Handler {
             self.recent_shown = state.recent.clone();
         } else if self.recent_shown != state.recent {
             self.service.fill(
-                mapper::RECENT_TITLE,
+                mapper::recent_title(),
                 &mapper::recent_entries(&self.commands, &state.recent),
             );
             self.recent_shown = state.recent.clone();
@@ -265,7 +273,7 @@ mod tests {
         let Some(dto::MenuEntry::Submenu { title, entries }) = go.entries.last() else {
             panic!("Recent Folders is last in Go");
         };
-        assert_eq!(title, mapper::RECENT_TITLE);
+        assert_eq!(title, mapper::recent_title());
         assert!(matches!(
             &entries[0],
             dto::MenuEntry::Command { title, tag, .. }
@@ -280,7 +288,7 @@ mod tests {
         });
         let filled = service.filled.lock().unwrap().clone();
         assert_eq!(filled.len(), 1);
-        assert_eq!(filled[0].0, mapper::RECENT_TITLE);
+        assert_eq!(filled[0].0, mapper::recent_title());
         assert!(matches!(
             &filled[0].1[1],
             dto::MenuEntry::Command { title, tag, .. }
@@ -293,6 +301,73 @@ mod tests {
         );
         let clear = handler.tag_of(&Command::ClearRecent).unwrap();
         assert_eq!(handler.command(clear), Some(Command::ClearRecent));
+    }
+
+    #[test]
+    fn a_change_of_language_puts_the_menus_up_again_with_recent_folders_under_their_new_title() {
+        let service = Arc::new(FakeMenuBar::default());
+        let mut handler = Handler::new(service.clone());
+        handler.window_focused();
+        let recent = State {
+            recent: vec!["Desktop".into()],
+            ..state()
+        };
+        handler.sync(&recent);
+        let mirror_tag = handler.tag_of(&Command::Mirror);
+        let states_before = service.states.lock().unwrap().len();
+
+        crate::i18n::set_language(dto::Language::Thai);
+        handler.language_changed();
+        assert_eq!(
+            service.installed.lock().unwrap().len(),
+            1,
+            "told at the next sync"
+        );
+        handler.sync(&recent);
+
+        let installed = service.installed.lock().unwrap().clone();
+        assert_eq!(installed.len(), 2, "put up again");
+        let titles = |menus: &[dto::Menu]| -> Vec<String> {
+            menus.iter().map(|menu| menu.title.clone()).collect()
+        };
+        assert_ne!(titles(&installed[1]), titles(&installed[0]));
+        assert!(titles(&installed[1]).contains(&crate::i18n::t("menubar.go").to_owned()));
+        let go = installed[1]
+            .iter()
+            .find(|menu| menu.title == crate::i18n::t("menubar.go"))
+            .unwrap();
+        let Some(dto::MenuEntry::Submenu { title, entries }) = go.entries.last() else {
+            panic!("Recent Folders is last in Go");
+        };
+        assert_eq!(title, mapper::recent_title());
+        assert_eq!(title, crate::i18n::t("menubar.recent"));
+        assert!(matches!(
+            &entries[0],
+            dto::MenuEntry::Command { title, .. } if title == "Desktop"
+        ));
+        assert_eq!(
+            handler.tag_of(&Command::Mirror),
+            mirror_tag,
+            "tags stay what they were"
+        );
+        assert!(
+            service.states.lock().unwrap().len() > states_before,
+            "what is greyed and ticked is told again to the new menus"
+        );
+
+        handler.sync(&State {
+            recent: vec!["Downloads".into()],
+            ..state()
+        });
+        assert_eq!(
+            service
+                .filled
+                .lock()
+                .unwrap()
+                .last()
+                .map(|(title, _)| title.clone()),
+            Some(crate::i18n::t("menubar.recent").to_owned())
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ use super::mapper;
 use super::request::Request;
 use super::response::{ProgressResponse, SummaryResponse};
 use crate::handler::error::{self, ErrorResponse};
+use crate::i18n::{count, t, tf};
 
 /// Called by the service after every chunk.
 pub type Progress = Box<dyn Fn(dto::TransferProgress) + Send + Sync>;
@@ -363,6 +364,7 @@ enum Stage {
     Asking { existing: Vec<String> },
     Running {
         progress: ProgressResponse,
+        last: Option<dto::TransferProgress>,
         cancel: dto::Cancel,
         cancelling: bool,
         /// Stopping to be resumed: the job is kept, not finished.
@@ -375,6 +377,7 @@ enum Stage {
 struct Paused {
     job: Job,
     progress: ProgressResponse,
+    last: Option<dto::TransferProgress>,
     /// Stopped because the phone went away or went silent: it carries on by
     /// itself when the same phone opens again (`phone_back`).
     for_phone: bool,
@@ -388,6 +391,7 @@ struct Current {
 struct Finished {
     job: Job,
     outcome: Result<SummaryResponse, ErrorResponse>,
+    source: Option<(dto::TransferSummary, Option<dto::UsbSpeed>)>,
     /// Another phone has been opened since: the job's storage ids and paths
     /// would name that phone's files, so it is not run again.
     other_phone: bool,
@@ -448,6 +452,14 @@ impl Job {
 }
 
 impl Finished {
+    fn reword(&mut self) {
+        self.outcome = match (&self.source, &self.outcome) {
+            (Some((summary, link)), Ok(_)) => Ok(summarize(Some(&self.job), summary, *link)),
+            (_, Ok(summary)) => Ok(summary.clone()),
+            (_, Err(error)) => Err(error.reworded()),
+        };
+    }
+
     /// Worth trying again: it failed, it finished with files missing, or a
     /// move left originals behind. A retry copies only what is not there yet,
     /// so nothing is done twice. Never on a phone other than its own.
@@ -842,6 +854,36 @@ impl Handler {
 
     /// Another phone is open now: what was done on the last one stays in the
     /// list, but is not offered again.
+    pub fn language_changed(&mut self) {
+        for finished in &mut self.history {
+            finished.reword();
+        }
+        self.report_note = None;
+        self.edit_note = None;
+        if let Some(Current {
+            job,
+            stage: Stage::Running { progress, last, .. },
+        }) = &mut self.current
+        {
+            *progress = match last {
+                Some(last) => worded_progress(job, last),
+                None => preparing_for(job),
+            };
+        }
+        if let Some(Paused {
+            job,
+            progress,
+            last,
+            ..
+        }) = &mut self.paused
+        {
+            *progress = match last {
+                Some(last) => worded_progress(job, last),
+                None => preparing_for(job),
+            };
+        }
+    }
+
     pub fn forget_phone(&mut self) {
         self.changes += 1;
         // An edit waiting to go back belongs to the last phone; its working
@@ -855,6 +897,7 @@ impl Handler {
             self.history.push(Finished {
                 job: paused.job,
                 outcome: Err(error::to_error_response(dto::Error::Cancelled)),
+                source: None,
                 other_phone: false,
             });
         }
@@ -1042,34 +1085,13 @@ impl Handler {
         job: Job,
         transfer: impl FnOnce(Arc<dyn Service>, dto::Cancel, Progress) -> Transfer + Send + 'static,
     ) -> Task<Message> {
-        let (direction, moving) = match &job {
-            Job::Download(_, mode, _) => (dto::Direction::Download, *mode == dto::Paste::Move),
-            Job::Upload(_, mode, _) => (dto::Direction::Upload, *mode == dto::Paste::Move),
-            Job::SendEdit(_) => (dto::Direction::Upload, false),
-            Job::DeleteKeeping(_) => (dto::Direction::Download, true),
-            Job::OnPhone(request, _) => (dto::Direction::Upload, request.mode == dto::Paste::Move),
-            Job::OnMac(request) => (dto::Direction::Local, request.mode == dto::Paste::Move),
-            Job::Import(_) | Job::Check(_) => (dto::Direction::Download, false),
-            Job::Mirror(request) => (
-                match request.direction {
-                    dto::MirrorDirection::ToMac => dto::Direction::Download,
-                    dto::MirrorDirection::ToPhone => dto::Direction::Upload,
-                },
-                false,
-            ),
-        };
-        let preparing = match &job {
-            Job::OnPhone(..) => mapper::preparing_via_mac(moving),
-            Job::Import(_) => mapper::preparing_import(),
-            Job::Mirror(_) => mapper::preparing_mirror(),
-            Job::Check(_) => mapper::preparing_check(),
-            _ => mapper::preparing_response(direction, moving),
-        };
+        let preparing = preparing_for(&job);
         let cancel = dto::Cancel::new();
         self.current = Some(Current {
             job,
             stage: Stage::Running {
                 progress: preparing,
+                last: None,
                 cancel: cancel.clone(),
                 cancelling: false,
                 pausing: false,
@@ -1092,6 +1114,7 @@ impl Handler {
             job,
             stage: Stage::Running {
                 progress: mapper::preparing_response(direction, moving),
+                last: None,
                 cancel: cancel.clone(),
                 cancelling: false,
                 pausing: false,
@@ -1173,7 +1196,7 @@ impl Handler {
                         }
                         Task::none()
                     }
-                    Err(error) => self.finish(Err(error)),
+                    Err(error) => self.finish(Err(error), None),
                 }
             }
             // The download found names taken on the Mac before copying.
@@ -1204,16 +1227,14 @@ impl Handler {
                     job,
                     stage:
                         Stage::Running {
-                            progress: shown, ..
+                            progress: shown,
+                            last,
+                            ..
                         },
                 }) = &mut self.current
                 {
-                    *shown = match job {
-                        Job::Import(_) => mapper::to_import_progress(&progress),
-                        Job::Mirror(_) => mapper::to_mirror_progress(&progress),
-                        Job::Check(_) => mapper::to_check_progress(&progress),
-                        _ => mapper::to_progress_response(&progress),
-                    };
+                    *shown = worded_progress(job, &progress);
+                    *last = Some(progress);
                 }
                 Task::none()
             }
@@ -1232,7 +1253,10 @@ impl Handler {
                 Task::none()
             }
             Message::Edited(Err(error)) => {
-                self.edit_note = Some(format!("Couldn't open it for editing: {}", error.title));
+                self.edit_note = Some(tf(
+                    "transfer.edit.couldnt_open",
+                    &[("reason", &error.title)],
+                ));
                 Task::none()
             }
             Message::CheckEdits => {
@@ -1268,7 +1292,10 @@ impl Handler {
                 match result {
                     Ok(()) => self.edits.retain(|edit| edit.copy.id != id),
                     Err(error) => {
-                        self.edit_note = Some(format!("Couldn't discard it: {}", error.title));
+                        self.edit_note = Some(tf(
+                            "transfer.edit.couldnt_discard",
+                            &[("reason", &error.title)],
+                        ));
                     }
                 }
                 Task::none()
@@ -1280,7 +1307,7 @@ impl Handler {
             Message::ReportSaved(result) => {
                 self.report_note = Some(match result {
                     Ok(path) => mapper::saved_note(&path),
-                    Err(error) => format!("Not saved: {}", error.title),
+                    Err(error) => tf("transfer.report.not_saved", &[("reason", &error.title)]),
                 });
                 Task::none()
             }
@@ -1294,23 +1321,14 @@ impl Handler {
                     let id = copy.id.clone();
                     self.edits.retain(|edit| edit.copy.id != id);
                 }
+                if let Ok(summary) = &result {
+                    note_problems_shown(summary);
+                }
                 let job = self.current.as_ref().map(|current| &current.job);
                 let link = self.link;
-                let outcome = result.map(|summary| {
-                    let response = match job {
-                        Some(Job::Import(_)) => mapper::to_import_summary(&summary),
-                        Some(Job::Mirror(_)) => mapper::to_mirror_summary(&summary),
-                        Some(Job::Check(_)) => mapper::to_check_summary(&summary),
-                        Some(Job::SendEdit(copy)) => mapper::to_edit_summary(&summary, &copy.name),
-                        Some(Job::DeleteKeeping(_)) => mapper::to_delete_summary(&summary),
-                        _ => mapper::to_summary_response(&summary),
-                    };
-                    SummaryResponse {
-                        timing: mapper::timing_line(&summary, link),
-                        ..response
-                    }
-                });
-                self.finish(outcome)
+                let source = result.as_ref().ok().map(|summary| (summary.clone(), link));
+                let outcome = result.map(|summary| summarize(job, &summary, link));
+                self.finish(outcome, source)
             }
         }
     }
@@ -1341,6 +1359,7 @@ impl Handler {
                         self.history.push(Finished {
                             job: paused.job,
                             outcome: Err(error::to_error_response(dto::Error::Cancelled)),
+                            source: None,
                             other_phone: false,
                         });
                         self.carry_on()
@@ -1517,12 +1536,17 @@ impl Handler {
     /// Records the running job's outcome and starts the next one; a job the
     /// user paused that stopped as asked is kept instead, and the queue
     /// waits for it.
-    fn finish(&mut self, outcome: Result<SummaryResponse, ErrorResponse>) -> Task<Message> {
+    fn finish(
+        &mut self,
+        outcome: Result<SummaryResponse, ErrorResponse>,
+        source: Option<(dto::TransferSummary, Option<dto::UsbSpeed>)>,
+    ) -> Task<Message> {
         if let Some(Current {
             job,
             stage:
                 Stage::Running {
                     progress,
+                    last,
                     pausing: true,
                     cancelling: false,
                     ..
@@ -1534,6 +1558,7 @@ impl Handler {
             self.paused = Some(Paused {
                 job: resumed,
                 progress: progress.clone(),
+                last: last.clone(),
                 for_phone: false,
             });
             self.current = None;
@@ -1547,6 +1572,7 @@ impl Handler {
             stage:
                 Stage::Running {
                     progress,
+                    last,
                     cancelling: false,
                     ..
                 },
@@ -1558,6 +1584,7 @@ impl Handler {
             self.paused = Some(Paused {
                 job: resumed,
                 progress: progress.clone(),
+                last: last.clone(),
                 for_phone: true,
             });
             self.current = None;
@@ -1586,6 +1613,7 @@ impl Handler {
             self.history.push(Finished {
                 job: current.job,
                 outcome,
+                source,
                 other_phone: false,
             });
         }
@@ -1637,7 +1665,7 @@ impl Handler {
 
         if let Some(current) = &self.current {
             panel = panel.push(match &current.stage {
-                Stage::Checking => text("Checking the phone…")
+                Stage::Checking => text(t("transfer.checking_phone"))
                     .size(13)
                     .style(text::secondary)
                     .into(),
@@ -1685,9 +1713,12 @@ impl Handler {
             });
             panel = panel.push(
                 column![
-                    text(format!("Waiting ({})", self.waiting.len()))
-                        .size(12)
-                        .style(text::secondary),
+                    text(tf(
+                        "transfer.waiting_count",
+                        &[("count", &self.waiting.len().to_string())],
+                    ))
+                    .size(12)
+                    .style(text::secondary),
                     column(rows).spacing(2),
                 ]
                 .spacing(4),
@@ -1716,9 +1747,9 @@ impl Handler {
             panel = panel.push(
                 column![
                     row![
-                        text("Finished").size(12).style(text::secondary),
+                        text(t("label.finished")).size(12).style(text::secondary),
                         space::horizontal(),
-                        button(text("Clear").size(12))
+                        button(text(t("label.clear")).size(12))
                             .style(button::text)
                             .padding([0, 6])
                             .on_press(Message::Request(Request::Clear)),
@@ -1749,6 +1780,77 @@ type Transfer = std::pin::Pin<
 /// panic that ended the task instead would leave the job "running" for good,
 /// holding the queue, the Dock bar, the Mac awake and the phone's session.
 /// The panic hook has already written its report.
+fn note_problems_shown(summary: &dto::TransferSummary) {
+    for failure in &summary.failures {
+        error::note_shown(&failure.error);
+    }
+    let Some(removal) = &summary.removal else {
+        return;
+    };
+    for kept in &removal.kept {
+        if let dto::Why::Refused(refusal) = &kept.why {
+            error::note_shown(refusal);
+        }
+    }
+    if let Some(stopped) = &removal.stopped {
+        error::note_shown(stopped);
+    }
+}
+
+fn preparing_for(job: &Job) -> ProgressResponse {
+    let (direction, moving) = match job {
+        Job::Download(_, mode, _) => (dto::Direction::Download, *mode == dto::Paste::Move),
+        Job::Upload(_, mode, _) => (dto::Direction::Upload, *mode == dto::Paste::Move),
+        Job::SendEdit(_) => (dto::Direction::Upload, false),
+        Job::DeleteKeeping(_) => (dto::Direction::Download, true),
+        Job::OnPhone(request, _) => (dto::Direction::Upload, request.mode == dto::Paste::Move),
+        Job::OnMac(request) => (dto::Direction::Local, request.mode == dto::Paste::Move),
+        Job::Import(_) | Job::Check(_) => (dto::Direction::Download, false),
+        Job::Mirror(request) => (
+            match request.direction {
+                dto::MirrorDirection::ToMac => dto::Direction::Download,
+                dto::MirrorDirection::ToPhone => dto::Direction::Upload,
+            },
+            false,
+        ),
+    };
+    match job {
+        Job::OnPhone(..) => mapper::preparing_via_mac(moving),
+        Job::Import(_) => mapper::preparing_import(),
+        Job::Mirror(_) => mapper::preparing_mirror(),
+        Job::Check(_) => mapper::preparing_check(),
+        _ => mapper::preparing_response(direction, moving),
+    }
+}
+
+fn worded_progress(job: &Job, progress: &dto::TransferProgress) -> ProgressResponse {
+    match job {
+        Job::Import(_) => mapper::to_import_progress(progress),
+        Job::Mirror(_) => mapper::to_mirror_progress(progress),
+        Job::Check(_) => mapper::to_check_progress(progress),
+        _ => mapper::to_progress_response(progress),
+    }
+}
+
+fn summarize(
+    job: Option<&Job>,
+    summary: &dto::TransferSummary,
+    link: Option<dto::UsbSpeed>,
+) -> SummaryResponse {
+    let response = match job {
+        Some(Job::Import(_)) => mapper::to_import_summary(summary),
+        Some(Job::Mirror(_)) => mapper::to_mirror_summary(summary),
+        Some(Job::Check(_)) => mapper::to_check_summary(summary),
+        Some(Job::SendEdit(copy)) => mapper::to_edit_summary(summary, &copy.name),
+        Some(Job::DeleteKeeping(_)) => mapper::to_delete_summary(summary),
+        _ => mapper::to_summary_response(summary),
+    };
+    SummaryResponse {
+        timing: mapper::timing_line(summary, link),
+        ..response
+    }
+}
+
 async fn guarded<T>(
     work: impl std::future::Future<Output = Result<T, dto::Error>>,
 ) -> Result<T, dto::Error> {
@@ -1852,10 +1954,10 @@ fn offered_view(offered: &[Job]) -> Element<'_, Message> {
         row![
             text(mapper::offered_title(offered.len())).size(15),
             space::horizontal(),
-            button(text("Continue").size(13))
+            button(text(t("label.continue")).size(13))
                 .style(button::primary)
                 .on_press(Message::Request(Request::ContinueSaved)),
-            button(text("Discard").size(13))
+            button(text(t("label.discard")).size(13))
                 .style(button::secondary)
                 .on_press(Message::Request(Request::DiscardSaved)),
         ]
@@ -1868,12 +1970,16 @@ fn offered_view(offered: &[Job]) -> Element<'_, Message> {
     }
     if offered.len() > OFFERED_SHOWN {
         list = list.push(
-            text(format!("and {} more", offered.len() - OFFERED_SHOWN))
-                .size(12)
-                .style(text::secondary),
+            text(count(
+                "explorer.paste.more",
+                offered.len() - OFFERED_SHOWN,
+                &[],
+            ))
+            .size(12)
+            .style(text::secondary),
         );
     }
-    list.push(text(mapper::OFFERED_NOTE).size(12).style(text::secondary))
+    list.push(text(mapper::offered_note()).size(12).style(text::secondary))
         .into()
 }
 
@@ -1949,23 +2055,26 @@ fn from_saved_answer(answer: dto::SavedAnswer) -> Answer {
 /// for the phone has no Resume: it carries on when the phone is back.
 fn paused_view(progress: &ProgressResponse, for_phone: bool) -> Element<'_, Message> {
     let (title, note) = if for_phone {
-        (mapper::waiting_title(&progress.title), mapper::WAITING_NOTE)
+        (
+            mapper::waiting_title(&progress.title),
+            mapper::waiting_note(),
+        )
     } else {
-        (mapper::paused_title(&progress.title), mapper::PAUSED_NOTE)
+        (mapper::paused_title(&progress.title), mapper::paused_note())
     };
     let mut buttons = row![text(title).size(15), space::horizontal()]
         .spacing(8)
         .align_y(Alignment::Center);
     if !for_phone {
         buttons = buttons.push(
-            button(text("Resume").size(13))
+            button(text(t("label.resume")).size(13))
                 .style(button::primary)
                 .on_press(Message::Request(Request::Resume)),
         );
     }
     column![
         buttons.push(
-            button(text("Cancel").size(13))
+            button(text(t("label.cancel")).size(13))
                 .style(button::secondary)
                 .on_press(Message::Request(Request::Cancel)),
         ),
@@ -1985,23 +2094,23 @@ fn edit_row<'a>(edit: &'a Edit, open_phone: Option<&str>) -> Element<'a, Message
         (
             mapper::edit_saved_title(&edit.copy.name),
             if can_send {
-                mapper::EDIT_SEND_NOTE
+                mapper::edit_send_note()
             } else {
-                mapper::EDIT_PHONE_NOTE
+                mapper::edit_phone_note()
             },
         )
     } else {
         (
             mapper::edit_open_title(&edit.copy.name),
-            mapper::EDIT_OPEN_NOTE,
+            mapper::edit_open_note(),
         )
     };
     let mut buttons = row![
         button(
             text(if edit.saved {
-                "Discard"
+                t("label.discard")
             } else {
-                "Stop Editing"
+                t("label.stop_editing")
             })
             .size(13)
         )
@@ -2011,7 +2120,7 @@ fn edit_row<'a>(edit: &'a Edit, open_phone: Option<&str>) -> Element<'a, Message
     .spacing(8);
     if edit.saved {
         buttons = buttons.push(
-            button(text("Send to Phone").size(13))
+            button(text(t("transfer.edit.send_button")).size(13))
                 .style(button::primary)
                 .on_press_maybe(can_send.then_some(Message::Request(Request::SendEdit(id)))),
         );
@@ -2085,7 +2194,7 @@ fn history_row(index: usize, finished: &Finished) -> Element<'_, Message> {
     match &finished.outcome {
         Ok(summary) if summary.reveal.is_some() => {
             line = line.push(
-                button(text("Show in Finder").size(12))
+                button(text(t("menu.item.show_in_finder")).size(12))
                     .style(button::secondary)
                     .on_press(Message::Request(Request::ShowInFinder(index))),
             );
@@ -2107,7 +2216,7 @@ fn history_row(index: usize, finished: &Finished) -> Element<'_, Message> {
         }
         Err(_) if finished.is_retryable() => {
             line = line.push(
-                button(text("Retry").size(12))
+                button(text(t("label.retry")).size(12))
                     .style(button::secondary)
                     .on_press(Message::Request(Request::Retry(index))),
             );
@@ -2116,7 +2225,7 @@ fn history_row(index: usize, finished: &Finished) -> Element<'_, Message> {
     }
     if matches!(&finished.outcome, Ok(summary) if !summary.report.is_empty()) {
         line = line.push(
-            button(text("Details").size(12))
+            button(text(t("label.details")).size(12))
                 .style(button::secondary)
                 .on_press(Message::Request(Request::Details(index))),
         );
@@ -2168,7 +2277,7 @@ fn report_view<'a>(
     list = list.push(spacer(count - shown.end));
 
     let mut header = row![
-        button(text("‹ Finished").size(12))
+        button(text(format!("‹ {}", t("label.finished"))).size(12))
             .style(button::text)
             .padding([0, 6])
             .on_press(Message::Request(Request::CloseDetails)),
@@ -2185,13 +2294,13 @@ fn report_view<'a>(
     .align_y(Alignment::Center);
     if summary.report_folder.is_some() {
         header = header.push(
-            button(text("Save Report").size(12))
+            button(text(t("label.save_report")).size(12))
                 .style(button::secondary)
                 .on_press(Message::Request(Request::SaveReport)),
         );
     }
     header = header.push(
-        button(text("Copy").size(12))
+        button(text(t("menu.item.copy")).size(12))
             .style(button::secondary)
             .on_press(Message::Request(Request::CopyReport)),
     );
@@ -2212,9 +2321,9 @@ fn report_view<'a>(
 /// originals left to take off the phone.
 fn retry_label(summary: &SummaryResponse) -> &'static str {
     if summary.failures.is_empty() {
-        "Retry"
+        t("label.retry")
     } else {
-        "Retry failed"
+        t("label.retry_failed")
     }
 }
 
@@ -2242,28 +2351,31 @@ fn asking(existing: &[String], asked: Asked) -> Element<'_, Message> {
     };
     let mut choices = row![
         space::horizontal(),
-        button(text("Cancel").size(13))
+        button(text(t("label.cancel")).size(13))
             .style(button::text)
             .on_press(Message::Request(Request::Cancel)),
-        choice("Skip", dto::Conflict::Skip),
-        choice("Keep both", dto::Conflict::KeepBoth),
+        choice(t("label.skip"), dto::Conflict::Skip),
+        choice(t("label.keep_both"), dto::Conflict::KeepBoth),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
     if asked != Asked::PhoneMove {
-        choices = choices.push(choice("Replace older", dto::Conflict::ReplaceOlder));
+        choices = choices.push(choice(
+            t("label.replace_older"),
+            dto::Conflict::ReplaceOlder,
+        ));
     }
     column![
         text(mapper::conflict_title(existing, asked == Asked::OnMac)).size(15),
         text(match asked {
-            Asked::OnMac => "Skip keeps what's on your Mac. Replace older replaces a file only with a newer one. Replace puts the phone's in place and the old one in the Trash; folders merge.",
-            Asked::PhoneCopy => "Skip keeps what's on the phone. Replace older replaces a file only with a newer one. Replace overwrites files; folders merge.",
-            Asked::PhoneMove => "Skip keeps what's on the phone. Replace overwrites files and merges folders.",
+            Asked::OnMac => t("transfer.ask.on_mac"),
+            Asked::PhoneCopy => t("transfer.ask.phone_copy"),
+            Asked::PhoneMove => t("transfer.ask.phone_move"),
         })
         .size(12)
         .style(text::secondary),
         choices.push(
-            button(text("Replace").size(13))
+            button(text(t("label.replace")).size(13))
                 .style(button::danger)
                 .on_press(Message::Request(Request::Resolve(dto::Conflict::Replace))),
         ),
@@ -2293,9 +2405,9 @@ fn running(
     } = stopping;
     let cancel = button(
         text(if cancelling {
-            "Cancelling…"
+            t("label.cancelling")
         } else {
-            "Cancel"
+            t("label.cancel")
         })
         .size(13),
     )
@@ -2304,11 +2416,16 @@ fn running(
     let mut buttons = row![].spacing(8).align_y(Alignment::Center);
     if can_pause {
         buttons = buttons.push(
-            button(text(if pausing { "Pausing…" } else { "Pause" }).size(13))
-                .style(button::secondary)
-                .on_press_maybe(
-                    (!pausing && !cancelling).then_some(Message::Request(Request::Pause)),
-                ),
+            button(
+                text(if pausing {
+                    t("label.pausing")
+                } else {
+                    t("label.pause")
+                })
+                .size(13),
+            )
+            .style(button::secondary)
+            .on_press_maybe((!pausing && !cancelling).then_some(Message::Request(Request::Pause))),
         );
     }
     buttons = buttons.push(cancel);
@@ -2409,6 +2526,182 @@ mod tests {
 
     fn stage(handler: &Handler) -> Option<&Stage> {
         handler.current.as_ref().map(|current| &current.stage)
+    }
+
+    fn in_thai<Output>(work: impl FnOnce() -> Output) -> Output {
+        crate::i18n::with_language(dto::Language::Thai, work)
+    }
+
+    #[test]
+    fn a_language_switch_rewords_what_a_job_says_before_its_first_report() {
+        let mut handler = handler();
+        let _ = handler.download(download_request());
+        let Some(Current {
+            stage:
+                Stage::Running {
+                    progress,
+                    last: None,
+                    ..
+                },
+            ..
+        }) = &handler.current
+        else {
+            panic!("it is preparing");
+        };
+        let english = progress.title.clone();
+        let in_thai_now = in_thai(|| mapper::preparing_response(dto::Direction::Download, false));
+        assert_ne!(in_thai_now.title, english, "the catalog has Thai wording");
+
+        in_thai(|| handler.language_changed());
+
+        let Some(Current {
+            stage: Stage::Running { progress, .. },
+            ..
+        }) = &handler.current
+        else {
+            panic!("still preparing");
+        };
+        assert_eq!(progress.title, in_thai_now.title);
+        assert_eq!(progress.detail, in_thai_now.detail);
+    }
+
+    #[test]
+    fn a_language_switch_rewords_a_finished_row_from_what_it_came_from() {
+        let mut handler = handler();
+        let _ = handler.download(download_request());
+        finish_ok(&mut handler);
+        let english = handler.history[0].outcome.clone().expect("it finished");
+        let in_thai_now = in_thai(|| mapper::to_summary_response(&summary()));
+        assert_ne!(
+            in_thai_now.title, english.title,
+            "the catalog has Thai wording"
+        );
+
+        in_thai(|| handler.language_changed());
+
+        let reworded = handler.history[0].outcome.as_ref().expect("still finished");
+        assert_eq!(reworded.title, in_thai_now.title);
+        assert_eq!(reworded.detail, in_thai_now.detail);
+        assert_eq!(reworded.reveal, english.reveal);
+        assert_eq!(reworded.left, english.left);
+        assert_eq!(reworded.renamed, english.renamed);
+    }
+
+    #[test]
+    fn a_files_failure_is_noted_once_and_not_again_when_the_words_change() {
+        error::clear_recent();
+        let mut handler = handler();
+        let _ = handler.download(download_request());
+        let failed = dto::TransferSummary {
+            failures: vec![dto::FileFailure {
+                label: "a.jpg".into(),
+                error: dto::Error::MacDiskFull,
+            }],
+            ..summary()
+        };
+        let _ = handler.update(Message::Finished(Ok(failed)));
+
+        in_thai(|| handler.language_changed());
+
+        let problems = error::recent_problems();
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].title, "Your Mac's disk is full");
+        assert_eq!(problems[0].times, 1);
+    }
+
+    #[test]
+    fn a_failed_row_is_said_again_from_its_error() {
+        let mut handler = handler();
+        let _ = handler.download(download_request());
+        finish_err(&mut handler, dto::Error::MacDiskFull);
+
+        in_thai(|| handler.language_changed());
+
+        let Err(error) = &handler.history[0].outcome else {
+            panic!("it failed");
+        };
+        let said = in_thai(|| error::describe_again(&dto::Error::MacDiskFull).title);
+        assert_ne!(said, "Your Mac's disk is full");
+        assert_eq!(error.title, said);
+        assert!(handler.history[0].is_retryable());
+    }
+
+    #[test]
+    fn a_language_switch_clears_what_was_said_about_a_report_or_an_edit() {
+        let mut handler = handler();
+        handler.report_note = Some("Saved “a.tsv” in “Trip”".into());
+        handler.edit_note = Some("Couldn't open it for editing: x".into());
+
+        in_thai(|| handler.language_changed());
+
+        assert!(handler.report_note.is_none());
+        assert!(handler.edit_note.is_none());
+    }
+
+    #[test]
+    fn a_transfer_running_through_the_switch_finishes_the_same_in_the_new_language() {
+        let run = |switch: bool| {
+            let mut handler = handler();
+            let _ = handler.download(download_request());
+            let _ = handler.update(Message::Progress(progress(2)));
+            if switch {
+                in_thai(|| handler.language_changed());
+            }
+            in_thai(|| {
+                let _ = handler.update(Message::Progress(progress(3)));
+            });
+            let title = running_title(&handler);
+            in_thai(|| finish_ok(&mut handler));
+            (handler, title)
+        };
+
+        let (switched, title) = run(true);
+
+        assert_eq!(
+            title,
+            in_thai(|| mapper::to_progress_response(&progress(3)).title)
+        );
+        assert_ne!(
+            title, "Downloading 1 of 1",
+            "the next progress text is in Thai"
+        );
+        let (plain, _) = run(false);
+        let (a, b) = (
+            switched.history[0].outcome.as_ref().unwrap(),
+            plain.history[0].outcome.as_ref().unwrap(),
+        );
+        assert_eq!(
+            (&a.reveal, &a.left, a.renamed),
+            (&b.reveal, &b.left, b.renamed)
+        );
+        assert_eq!(switched.history.len(), 1);
+    }
+
+    #[test]
+    fn a_paused_transfer_is_said_again_in_the_new_language() {
+        let mut handler = handler();
+        let _ = handler.download(download_request());
+        let _ = handler.update(Message::Progress(progress(2)));
+        request(&mut handler, Request::Pause);
+        finish_err(&mut handler, dto::Error::Cancelled);
+        let paused = |handler: &Handler| {
+            handler
+                .paused
+                .as_ref()
+                .expect("paused")
+                .progress
+                .title
+                .clone()
+        };
+        assert_eq!(paused(&handler), "Downloading 1 of 1");
+
+        in_thai(|| handler.language_changed());
+
+        assert_eq!(
+            paused(&handler),
+            in_thai(|| mapper::to_progress_response(&progress(2)).title)
+        );
+        assert_ne!(paused(&handler), "Downloading 1 of 1");
     }
 
     #[test]
@@ -3199,7 +3492,7 @@ mod tests {
         assert!(handler.edits[0].saved);
         let mut ui = iced_test::simulator(handler.view());
         assert!(ui.find("notes.txt was changed on the Mac").is_ok());
-        assert!(ui.find(mapper::EDIT_SEND_NOTE).is_ok());
+        assert!(ui.find(mapper::edit_send_note()).is_ok());
     }
 
     #[tokio::test]
@@ -3275,7 +3568,7 @@ mod tests {
         request(&mut handler, Request::SendEdit("c0ffee".into()));
         assert!(handler.current.is_none(), "another phone is open");
         let mut ui = iced_test::simulator(handler.view());
-        assert!(ui.find(mapper::EDIT_PHONE_NOTE).is_ok());
+        assert!(ui.find(mapper::edit_phone_note()).is_ok());
         drop(ui);
 
         handler.set_open_phone(Some("ABC123".into()));
@@ -4872,7 +5165,7 @@ mod tests {
             "the Mac may sleep while it waits"
         );
         assert!(shows(&handler, "Paused: Downloading 1 of 1"));
-        assert!(shows(&handler, mapper::PAUSED_NOTE));
+        assert!(shows(&handler, mapper::paused_note()));
 
         for message in clicked(&handler, "Resume") {
             let _ = handler.update(message);
@@ -5142,7 +5435,7 @@ mod tests {
             "nothing runs unasked"
         );
         assert!(shows(&handler, "2 transfers weren't finished last time"));
-        assert!(shows(&handler, mapper::OFFERED_NOTE));
+        assert!(shows(&handler, mapper::offered_note()));
         assert_eq!(handler.saved().len(), 2, "kept while offered");
         assert!(
             !handler.has_phone_work(),
@@ -5573,7 +5866,7 @@ mod tests {
             "told, being away"
         );
         assert!(shows(&handler, "Waiting for the phone: Downloading 1 of 1"));
-        assert!(shows(&handler, mapper::WAITING_NOTE));
+        assert!(shows(&handler, mapper::waiting_note()));
         assert!(
             !shows(&handler, "Resume"),
             "it resumes when the phone is back"

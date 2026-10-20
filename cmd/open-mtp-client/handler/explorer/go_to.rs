@@ -4,12 +4,13 @@
 //! the phone's remembered folders, the Mac's disk); nothing here asks the
 //! phone.
 
+use crate::i18n::key;
+
 /// Folder names offered under the field at most.
 pub const SUGGESTIONS: usize = 8;
 
 /// What the dialog says under the names.
-pub const HINT: &str =
-    "A path from the top (/), from here, or ~ for home. ↑ ↓ pick a folder; Return goes.";
+pub const HINT: &str = key("explorer.go_to_hint");
 
 /// The folder `typed` names, as an absolute path: from the top when it
 /// starts with `/`, from `home` with `~` (where there is one), else from

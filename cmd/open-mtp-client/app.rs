@@ -3,6 +3,7 @@
 //! and, optionally, a Mac pane beside it.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iced::keyboard::{self, Modifiers};
@@ -12,6 +13,7 @@ use iced::widget::{
 use iced::{Border, Color, Element, Length, Subscription, Task, Theme, theme, window};
 
 use internal::dto;
+use internal::service::local;
 
 use crate::handler::drop_spot::{Origin, SidebarDrop, Spot};
 use crate::handler::{
@@ -20,6 +22,7 @@ use crate::handler::{
 };
 // Free Up Space; `space` is iced's widget here.
 use crate::handler::space as freeing;
+use crate::i18n::{english_only, key, t, tf};
 use crate::keymap::{self, Shortcut};
 use crate::placement;
 use crate::wire::Handlers;
@@ -34,9 +37,8 @@ const LASSO_BEAT: Duration = Duration::from_millis(16);
 const SPRING_BEAT: Duration = Duration::from_millis(100);
 /// The Mac has a single volume; its id is ignored by the local service.
 const MAC_VOLUME: u64 = 0;
-const MAC_VOLUME_NAME: &str = "Mac";
-const DOWNLOAD_ACTION: &str = "Download";
-const UPLOAD_ACTION: &str = "Upload";
+const DOWNLOAD_ACTION: &str = key("label.download");
+const UPLOAD_ACTION: &str = key("label.upload");
 /// Finder sends one drop event per file; files arriving this close together
 /// are one drop.
 const DROP_SETTLE: Duration = Duration::from_millis(150);
@@ -56,6 +58,12 @@ pub enum QuitChoice {
     KeepGoing,
     /// While stopping: quit at once (a phone that no longer answers).
     QuitNow,
+}
+
+#[derive(Clone, Copy)]
+enum Leaving {
+    ToSwitch,
+    ToOpen,
 }
 
 /// Where a quit is.
@@ -181,6 +189,8 @@ pub struct App {
     info: info::Handler,
     /// The Mac's menu bar.
     menu: menubar::Handler,
+    languages: Arc<dyn local::Languages>,
+    language_applied: Option<dto::LanguageChoice>,
     /// The Mac home, which the import dialog shows paths from.
     home: String,
     /// The Mac's appearance, for the "Match the Mac" theme.
@@ -239,6 +249,8 @@ impl App {
             places: handlers.places,
             info: handlers.info,
             menu: handlers.menubar,
+            languages: handlers.languages,
+            language_applied: None,
             home: handlers.local_home.clone(),
             system_theme: theme::Mode::None,
             active: Side::Mac,
@@ -271,7 +283,7 @@ impl App {
             .open_with_fallback(
                 explorer::Volume {
                     id: MAC_VOLUME,
-                    name: MAC_VOLUME_NAME.to_owned(),
+                    name: english_only("Mac").to_owned(),
                     home: Some(handlers.local_home.clone()),
                     deletes_permanently: false,
                     transfer_action: None,
@@ -982,7 +994,7 @@ impl App {
 
                 // Uploading needs somewhere on the phone to go.
                 self.local_pane
-                    .set_transfer_action(after.is_some().then(|| UPLOAD_ACTION.to_owned()));
+                    .set_transfer_action(after.is_some().then_some(UPLOAD_ACTION));
 
                 // A new storage was picked, or the device went away. It opens
                 // where this phone's pane was left on it, or at the top.
@@ -1004,7 +1016,7 @@ impl App {
                                 name,
                                 home: None,
                                 deletes_permanently: true,
-                                transfer_action: Some(DOWNLOAD_ACTION.to_owned()),
+                                transfer_action: Some(DOWNLOAD_ACTION),
                                 shows_in_finder: false,
                                 pastes_within: true,
                                 phone_tools: true,
@@ -1380,8 +1392,37 @@ impl App {
         self.apply_settings()
     }
 
+    fn apply_language(&mut self) {
+        let choice = self.settings.current().language;
+        if self.language_applied == Some(choice) {
+            return;
+        }
+        self.language_applied = Some(choice);
+        let language = choice.resolve(&self.languages.preferred());
+        if language == crate::i18n::language() {
+            return;
+        }
+        crate::i18n::set_language(language);
+        self.settings.language_changed();
+        self.local_pane.language_changed();
+        self.device_pane.language_changed();
+        self.transfer.language_changed();
+        self.device.language_changed();
+        self.search.language_changed();
+        self.help.language_changed();
+        self.places.language_changed();
+        self.preview.language_changed();
+        self.crash.language_changed();
+        self.info.language_changed();
+        self.import.language_changed();
+        self.mirror.language_changed();
+        self.space.language_changed();
+        self.menu.language_changed();
+    }
+
     /// Pushes the settings into the panes; a hidden-files change reloads.
     fn apply_settings(&mut self) -> Task<Message> {
+        self.apply_language();
         let settings = self.settings.current();
         self.device.set_auto_connect(settings.auto_connect);
         self.transfer.set_sound(settings.finish_sound);
@@ -1552,20 +1593,20 @@ impl App {
     /// What the drop overlay over the phone pane says.
     fn drop_hint(&self) -> String {
         if !self.device_pane.is_open() {
-            return "Connect a phone to drop files here".to_owned();
+            return t("app.drop_no_phone").to_owned();
         }
         let folder = self
             .device_pane
             .current_path()
             .and_then(|path| Path::new(path).file_name())
             .map_or_else(
-                || "the top folder".to_owned(),
+                || t("app.top_folder").to_owned(),
                 |name| name.to_string_lossy().into_owned(),
             );
         if self.transfer.is_running() || self.transfer.is_paused() {
-            format!("Drop to queue an upload into {folder}")
+            tf("app.drop_queue", &[("folder", &folder)])
         } else {
-            format!("Drop to upload into {folder}")
+            tf("app.drop_upload", &[("folder", &folder)])
         }
     }
 
@@ -1913,24 +1954,29 @@ impl App {
     /// Why the open phone can't be closed for another now, if it can't: work
     /// on it would carry on against the other phone's files.
     fn why_not_switch(&self) -> Option<String> {
+        self.why_not_leave(Leaving::ToSwitch)
+    }
+
+    fn why_not_leave(&self, then: Leaving) -> Option<String> {
         let name = self.device.open_name()?;
+        let said = |to_switch: &'static str, to_open: &'static str| {
+            let key = match then {
+                Leaving::ToSwitch => to_switch,
+                Leaving::ToOpen => to_open,
+            };
+            Some(tf(key, &[("name", name)]))
+        };
         if self.preview.is_fetching() {
-            return Some(format!(
-                "Wait for Quick Look to get its files from {name}, or press esc, then switch."
-            ));
+            return said(key("app.wait_quick_look"), key("app.wait_quick_look_open"));
         }
         if self.transfer.has_phone_work() {
-            return Some(format!(
-                "Wait for the transfers on {name} to finish, or cancel them, then switch."
-            ));
+            return said(key("app.wait_transfers"), key("app.wait_transfers_open"));
         }
         if self.space.is_busy() {
-            return Some(format!(
-                "Wait for Free Up Space to finish with {name}, or stop it, then switch."
-            ));
+            return said(key("app.wait_space"), key("app.wait_space_open"));
         }
         if self.device_pane.is_editing() || self.device_pane.is_pasting() {
-            return Some(format!("Finish what is going on in {name}’s files first."));
+            return Some(tf("app.wait_editing", &[("name", name)]));
         }
         None
     }
@@ -2388,7 +2434,7 @@ impl App {
         let pin = match side {
             Side::Mac => dto::Pin {
                 side: dto::PinSide::Mac,
-                label: places::pin_label(&path, "Macintosh HD"),
+                label: places::pin_label(&path, english_only("Macintosh HD")),
                 path,
                 phone: None,
             },
@@ -2399,9 +2445,7 @@ impl App {
                     return;
                 };
                 if serial.is_empty() {
-                    self.places.refuse(
-                        "This phone gives no serial number, so its folders can't be pinned: they could be another phone's next time.".to_owned(),
-                    );
+                    self.places.refuse(t("app.pin_no_serial").to_owned());
                     return;
                 }
                 let serial = serial.to_owned();
@@ -2428,9 +2472,8 @@ impl App {
         if self.device.selected_storage().map(|(id, _)| id) == Some(storage_id) {
             return self.update(go);
         }
-        if let Some(why) = self.why_not_switch() {
-            self.places
-                .refuse(why.replace("then switch", "then open it"));
+        if let Some(why) = self.why_not_leave(Leaving::ToOpen) {
+            self.places.refuse(why);
             return Task::none();
         }
         // Picking the storage opens the pane at its top; going on to the
@@ -2722,7 +2765,7 @@ impl App {
     fn sidebar(&self) -> Element<'_, Message> {
         let settings = button(
             row![
-                text("Settings…").size(13),
+                text(t("menubar.settings")).size(13),
                 space::horizontal(),
                 text("⌘,").size(12).style(text::secondary)
             ]
@@ -2736,7 +2779,7 @@ impl App {
 
         let help = button(
             row![
-                text("Help…").size(13),
+                text(t("app.help_button")).size(13),
                 space::horizontal(),
                 text("⌘/").size(12).style(text::secondary)
             ]
@@ -2807,7 +2850,7 @@ enum Recent {
 fn mac_recent_labels(paths: &[String], home: &str) -> Vec<String> {
     let name = |path: &str| match path {
         "/" => "/".to_owned(),
-        _ if path == home => "Home".to_owned(),
+        _ if path == home => t("places.home").to_owned(),
         _ => explorer::folder_name(path),
     };
     let names: Vec<String> = paths.iter().map(|path| name(path)).collect();
@@ -2933,33 +2976,25 @@ fn focus_change(
 fn quit_view<'a>(quitting: Quitting) -> Element<'a, Message> {
     let card = match quitting {
         Quitting::Asking => column![
-            text("A transfer is under way").size(18),
-            text(
-                "Quitting stops it. A download or import carries on from where it stopped \
-                 next time; an upload's unfinished file is removed from the phone.",
-            )
-            .size(13),
+            text(t("app.quit_title")).size(18),
+            text(t("app.quit_asking")).size(13),
             row![
                 space::horizontal(),
-                button(text("Keep Going").size(13))
+                button(text(t("app.keep_going")).size(13))
                     .style(button::secondary)
                     .on_press(Message::Quit(QuitChoice::KeepGoing)),
-                button(text("Stop and Quit").size(13))
+                button(text(t("app.stop_and_quit")).size(13))
                     .style(button::primary)
                     .on_press(Message::Quit(QuitChoice::StopAndQuit)),
             ]
             .spacing(8),
         ],
         Quitting::Stopping => column![
-            text("Stopping the transfer…").size(18),
-            text(
-                "It stops at the next safe point, so what arrived is kept for next time. \
-                 If the phone no longer answers, quit now.",
-            )
-            .size(13),
+            text(t("app.stopping")).size(18),
+            text(t("app.stopping_note")).size(13),
             row![
                 space::horizontal(),
-                button(text("Quit Now").size(13))
+                button(text(t("app.quit_now")).size(13))
                     .style(button::secondary)
                     .on_press(Message::Quit(QuitChoice::QuitNow)),
             ],
@@ -3148,7 +3183,31 @@ mod tests {
         search: Arc<crate::handler::testing::FakeSearch>,
         settings_service: Arc<FakeSettings>,
     ) -> App {
-        let handlers = Handlers {
+        App::new(handlers_for(
+            device,
+            phone_files,
+            mac_files,
+            transfers,
+            search,
+            settings_service,
+            Arc::new(crate::handler::testing::FakeMenuBar::default()),
+            Arc::new(local::RecordingLanguages::new(&[])),
+        ))
+        .0
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handlers_for(
+        device: Arc<FakeDevice>,
+        phone_files: Arc<FakeExplorer>,
+        mac_files: Arc<FakeExplorer>,
+        transfers: Arc<FakeTransfer>,
+        search: Arc<crate::handler::testing::FakeSearch>,
+        settings_service: Arc<FakeSettings>,
+        menubar: Arc<crate::handler::testing::FakeMenuBar>,
+        languages: Arc<local::RecordingLanguages>,
+    ) -> Handlers {
+        Handlers {
             import: import::Handler::new(Arc::new(crate::handler::testing::FakeImport::default())),
             space: freeing::Handler::new(Arc::new(crate::handler::testing::FakeSpace::default())),
             mirror: mirror::Handler::new(Arc::new(crate::handler::testing::FakeMirror::default())),
@@ -3173,11 +3232,9 @@ mod tests {
             settings: settings::Handler::new(settings_service),
             help: help::Handler::new(Arc::new(crate::handler::testing::FakeHelp::default())),
             transfer: transfer::Handler::new(transfers),
-            menubar: menubar::Handler::new(Arc::new(
-                crate::handler::testing::FakeMenuBar::default(),
-            )),
-        };
-        App::new(handlers).0
+            menubar: menubar::Handler::new(menubar),
+            languages,
+        }
     }
 
     fn settings_request(app: &mut App, request: settings::Request) {
@@ -4864,6 +4921,316 @@ mod tests {
             reported: false,
             file: file.map(std::path::PathBuf::from),
         }
+    }
+
+    fn speaking(
+        saved: dto::LanguageChoice,
+        preferred: &[&str],
+    ) -> (App, Arc<crate::handler::testing::FakeMenuBar>) {
+        let settings = Arc::new(FakeSettings {
+            loaded: Some(dto::Settings {
+                language: saved,
+                ..dto::Settings::default()
+            }),
+            ..FakeSettings::default()
+        });
+        let menubar = Arc::new(crate::handler::testing::FakeMenuBar::default());
+        let handlers = handlers_for(
+            Arc::new(FakeDevice::with_storages(vec![storage(5, "Internal")])),
+            Arc::new(FakeExplorer::new(Ok(vec![]))),
+            Arc::new(FakeExplorer::new(Ok(vec![]))),
+            Arc::new(default_transfer()),
+            Arc::new(crate::handler::testing::FakeSearch::default()),
+            settings,
+            menubar.clone(),
+            Arc::new(local::RecordingLanguages::new(preferred)),
+        );
+        (App::new(handlers).0, menubar)
+    }
+
+    fn choose_language(app: &mut App, choice: dto::LanguageChoice) {
+        settings_request(app, settings::Request::SetLanguage(choice));
+    }
+
+    fn in_english<Output>(work: impl FnOnce() -> Output) -> Output {
+        crate::i18n::with_language(dto::Language::English, work)
+    }
+
+    fn menu_titles(installed: &[dto::Menu]) -> Vec<String> {
+        installed.iter().map(|menu| menu.title.clone()).collect()
+    }
+
+    #[test]
+    fn an_app_built_from_saved_settings_opens_in_the_language_saved() {
+        in_english(|| {
+            let _ = speaking(
+                dto::LanguageChoice::Chosen(dto::Language::Japanese),
+                &["th-TH"],
+            );
+
+            assert_eq!(crate::i18n::language(), dto::Language::Japanese);
+        });
+    }
+
+    #[test]
+    fn an_app_that_follows_the_mac_opens_in_the_first_offered_language_the_mac_lists() {
+        in_english(|| {
+            let _ = speaking(dto::LanguageChoice::FollowMac, &["fr-FR", "th-TH"]);
+            assert_eq!(crate::i18n::language(), dto::Language::Thai);
+        });
+        in_english(|| {
+            let _ = speaking(dto::LanguageChoice::FollowMac, &[]);
+            assert_eq!(crate::i18n::language(), dto::Language::English);
+        });
+    }
+
+    fn the_six_main_screens(language: dto::Language) -> Vec<(&'static str, App)> {
+        let mut connect = app();
+        let _ = connect.update(Message::Device(device::Message::Connected(Err(
+            to_error_response(dto::Error::AllowStorageAccess).into(),
+        ))));
+
+        let folder = two_listed_panes();
+
+        let mut transfer = app();
+        select_on_device(&mut transfer);
+        let _ = transfer.update(Message::DevicePane(explorer::Message::Request(
+            explorer::Request::Transfer,
+        )));
+
+        let mut error = two_listed_panes();
+        let _ = error.update(Message::DevicePane(explorer::Message::Listed {
+            volume_id: 5,
+            path: "/".into(),
+            result: Err(to_error_response(dto::Error::PathNotFound("/DCIM".into()))),
+        }));
+
+        let mut settings = two_listed_panes();
+        settings_request(&mut settings, settings::Request::Open);
+
+        let mut help = two_listed_panes();
+        command(&mut help, Code::Slash);
+        let _ = help.update(Message::Help(help::Message::Request(help::Request::Show(
+            help::Tab::Troubleshooting,
+        ))));
+
+        let mut screens = vec![
+            ("connect", connect),
+            ("folder", folder),
+            ("transfer", transfer),
+            ("error", error),
+            ("settings", settings),
+            ("help", help),
+        ];
+        for (_, app) in &mut screens {
+            crate::i18n::set_language(dto::Language::English);
+            choose_language(app, dto::LanguageChoice::Chosen(language));
+        }
+        screens
+    }
+
+    fn the_dialogs(language: dto::Language) -> Vec<(&'static str, App)> {
+        let mut info = two_listed_panes();
+        command(&mut info, Code::KeyI);
+
+        let mut import = two_listed_panes();
+        let _ = import.update(Message::Device(device::Message::Request(
+            device::Request::Import,
+        )));
+
+        let mut mirror = two_listed_panes();
+        let _ = choose_from_menu(&mut mirror, menubar::Command::Mirror);
+
+        let mut space = two_listed_panes();
+        let _ = space.update(Message::Device(device::Message::Request(
+            device::Request::FreeUpSpace,
+        )));
+
+        let mut dialogs = vec![
+            ("info", info),
+            ("import", import),
+            ("mirror", mirror),
+            ("space", space),
+        ];
+        for (_, app) in &mut dialogs {
+            crate::i18n::set_language(dto::Language::English);
+            choose_language(app, dto::LanguageChoice::Chosen(language));
+        }
+        dialogs
+    }
+
+    #[test]
+    fn language_check() {
+        crate::i18n::screens::clear_folder();
+        let mut problems = Vec::new();
+
+        for language in dto::Language::ALL {
+            crate::i18n::with_language(language, || {
+                for (screen, app) in the_six_main_screens(language)
+                    .into_iter()
+                    .chain(the_dialogs(language))
+                {
+                    problems.extend(crate::i18n::screens::look_at(language, screen, app.view()));
+                }
+            });
+        }
+
+        assert!(
+            problems.is_empty(),
+            "{} problems (the pictures are in target/language-check):\n{}",
+            problems.len(),
+            problems.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_first_launch_speaks_the_language_the_mac_lists_or_english() {
+        use dto::Language::{ChineseSimplified, English, Japanese, Thai};
+
+        let cases: [(dto::LanguageChoice, &[&str], dto::Language); 8] = [
+            (dto::LanguageChoice::FollowMac, &["ja-JP"], Japanese),
+            (dto::LanguageChoice::FollowMac, &["th-TH"], Thai),
+            (
+                dto::LanguageChoice::FollowMac,
+                &["zh-Hans-CN"],
+                ChineseSimplified,
+            ),
+            (dto::LanguageChoice::FollowMac, &["fr-FR"], English),
+            (dto::LanguageChoice::FollowMac, &["zh-Hant-TW"], English),
+            (dto::LanguageChoice::FollowMac, &["en-TH", "th-TH"], English),
+            (dto::LanguageChoice::FollowMac, &[], English),
+            (dto::LanguageChoice::Chosen(Thai), &["ja-JP"], Thai),
+        ];
+
+        for (saved, listed, spoken) in cases {
+            in_english(|| {
+                let _ = speaking(saved, listed);
+
+                assert_eq!(crate::i18n::language(), spoken, "{saved:?} with {listed:?}");
+            });
+        }
+    }
+
+    #[test]
+    fn the_language_is_set_before_the_first_view_so_nothing_flashes_in_english() {
+        in_english(|| {
+            let (app, _) = speaking(dto::LanguageChoice::FollowMac, &["ja-JP"]);
+
+            let mut ui = iced_test::simulator(app.view());
+
+            assert!(
+                ui.find(crate::i18n::t("app.help_button").to_owned())
+                    .is_ok()
+            );
+            assert!(
+                ui.find("Help…").is_err(),
+                "the English word is not drawn first"
+            );
+        });
+    }
+
+    #[test]
+    fn choosing_a_language_in_settings_changes_the_language_of_the_app() {
+        for language in dto::Language::ALL {
+            in_english(|| {
+                let (mut app, _) = speaking(dto::LanguageChoice::FollowMac, &[]);
+
+                choose_language(&mut app, dto::LanguageChoice::Chosen(language));
+
+                assert_eq!(crate::i18n::language(), language);
+                assert_eq!(
+                    app.settings.current().language,
+                    dto::LanguageChoice::Chosen(language)
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn following_the_mac_again_goes_to_the_language_the_mac_lists() {
+        in_english(|| {
+            let (mut app, _) =
+                speaking(dto::LanguageChoice::Chosen(dto::Language::Thai), &["ja-JP"]);
+            assert_eq!(crate::i18n::language(), dto::Language::Thai);
+
+            choose_language(&mut app, dto::LanguageChoice::FollowMac);
+
+            assert_eq!(crate::i18n::language(), dto::Language::Japanese);
+        });
+    }
+
+    #[test]
+    fn a_switch_puts_the_menu_up_again_in_the_new_language() {
+        in_english(|| {
+            let (mut app, menubar) = speaking(dto::LanguageChoice::FollowMac, &[]);
+            let _ = app.update(Message::Focused(true));
+            assert_eq!(menubar.installed.lock().unwrap().len(), 1);
+
+            choose_language(&mut app, dto::LanguageChoice::Chosen(dto::Language::Thai));
+
+            let installed = menubar.installed.lock().unwrap();
+            assert_eq!(installed.len(), 2, "put up again");
+            assert_ne!(
+                menu_titles(&installed[1]),
+                menu_titles(&installed[0]),
+                "with the new titles"
+            );
+        });
+    }
+
+    #[test]
+    fn a_setting_that_leaves_the_language_alone_puts_nothing_up_again() {
+        in_english(|| {
+            let (mut app, menubar) = speaking(dto::LanguageChoice::FollowMac, &[]);
+            let _ = app.update(Message::Focused(true));
+
+            settings_request(&mut app, settings::Request::SetShowHiddenOnMac(true));
+            choose_language(&mut app, dto::LanguageChoice::FollowMac);
+
+            assert_eq!(menubar.installed.lock().unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    fn the_language_is_two_clicks_from_the_main_window() {
+        in_english(|| {
+            let (mut app, _) = speaking(dto::LanguageChoice::FollowMac, &[]);
+            let mut clicks = 0;
+
+            click(&mut app, "Settings…");
+            clicks += 1;
+            assert!(app.settings.is_open());
+
+            let title = {
+                let mut ui = iced_test::simulator(app.view());
+                ui.find("Language").unwrap().bounds()
+            };
+            let picks_thai = |message: &Message| {
+                matches!(
+                    message,
+                    Message::Settings(settings::Message::Request(
+                        settings::Request::SetLanguage(choice)
+                    )) if *choice == dto::LanguageChoice::Chosen(dto::Language::Thai)
+                )
+            };
+            let reached = (0..200).find_map(|step| {
+                let mut ui = iced_test::simulator(app.view());
+                ui.point_at(iced::Point::new(
+                    title.x + 8.0,
+                    title.y + title.height + step as f32 * 3.0,
+                ));
+                let _ = ui.simulate(iced_test::simulator::click());
+                let messages: Vec<Message> = ui.into_messages().collect();
+                messages.iter().any(picks_thai).then_some(messages)
+            });
+            clicks += 1;
+            for message in reached.expect("one click on the dialog picks Thai") {
+                let _ = app.update(message);
+            }
+
+            assert_eq!(crate::i18n::language(), dto::Language::Thai);
+            assert!(clicks <= 3);
+        });
     }
 
     /// Clicks the button `label` in what the app shows, and feeds it back.

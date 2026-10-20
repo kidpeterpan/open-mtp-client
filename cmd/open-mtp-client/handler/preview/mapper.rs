@@ -1,6 +1,7 @@
 use internal::dto;
 
 use crate::handler::format::{format_bytes, format_count};
+use crate::i18n::{count, key, tf};
 
 /// What phone files are fetched for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,21 +12,35 @@ pub enum Purpose {
 }
 
 impl Purpose {
-    /// "Getting a.jpg from the phone …"
-    fn why(self) -> &'static str {
+    fn fetching(self) -> &'static str {
         match self {
-            Purpose::Look => "for Quick Look",
-            Purpose::Open => "to open it",
-            Purpose::Share => "to share",
+            Purpose::Look => key("preview.fetching.look"),
+            Purpose::Open => key("preview.fetching.open"),
+            Purpose::Share => key("preview.fetching.share"),
         }
     }
 
-    /// "… is too big to … from the phone"
-    fn doing(self) -> &'static str {
+    fn fetching_progress(self) -> &'static str {
         match self {
-            Purpose::Look => "look at",
-            Purpose::Open => "open",
-            Purpose::Share => "share",
+            Purpose::Look => key("preview.fetching_progress.look"),
+            Purpose::Open => key("preview.fetching_progress.open"),
+            Purpose::Share => key("preview.fetching_progress.share"),
+        }
+    }
+
+    fn too_big_one(self) -> &'static str {
+        match self {
+            Purpose::Look => key("preview.too_big_one.look"),
+            Purpose::Open => key("preview.too_big_one.open"),
+            Purpose::Share => key("preview.too_big_one.share"),
+        }
+    }
+
+    fn too_big_many(self) -> &'static str {
+        match self {
+            Purpose::Look => key("preview.too_big_many.look"),
+            Purpose::Open => key("preview.too_big_many.open"),
+            Purpose::Share => key("preview.too_big_many.share"),
         }
     }
 }
@@ -38,16 +53,18 @@ pub fn fetching_line(
 ) -> String {
     let what = match names {
         [one] => one.clone(),
-        many => format!("{} files", format_count(many.len())),
+        many => count("preview.files", many.len(), &[]),
     };
-    let why = purpose.why();
     match progress.filter(|p| p.bytes_total > 0) {
-        Some(p) => format!(
-            "Getting {what} from the phone {why}… {} of {}",
-            format_bytes(p.bytes_done),
-            format_bytes(p.bytes_total)
+        Some(p) => tf(
+            purpose.fetching_progress(),
+            &[
+                ("what", &what),
+                ("done", &format_bytes(p.bytes_done)),
+                ("total", &format_bytes(p.bytes_total)),
+            ],
         ),
-        None => format!("Getting {what} from the phone {why}…"),
+        None => tf(purpose.fetching(), &[("what", &what)]),
     }
 }
 
@@ -60,39 +77,64 @@ pub fn fraction(progress: Option<&dto::TransferProgress>) -> f32 {
 
 /// What was not shown and why, or `None` when everything was.
 pub fn refusals(fetched: &dto::Fetched, purpose: Purpose) -> Option<String> {
-    let doing = purpose.doing();
     let mut lines = Vec::new();
-    // "“a.jpg”" and "is", or "“a.jpg” and 2 more" and "are".
-    let named = |names: &[String]| match names {
-        [one] => (format!("“{one}”"), "is"),
-        [first, rest @ ..] => (format!("“{first}” and {} more", rest.len()), "are"),
-        [] => (String::new(), ""),
-    };
+    let most = format_bytes(dto::PREVIEW_LARGEST);
     if !fetched.too_big.is_empty() {
-        let (who, is) = named(&fetched.too_big);
-        lines.push(format!(
-            "{who} {is} too big to {doing} from the phone ({} at most): download it first.",
-            format_bytes(dto::PREVIEW_LARGEST)
+        lines.push(said_about(
+            &fetched.too_big,
+            purpose.too_big_one(),
+            purpose.too_big_many(),
+            &[("most", &most)],
         ));
     }
     if !fetched.folders.is_empty() {
-        let (who, is) = named(&fetched.folders);
-        lines.push(format!(
-            "{who} {is} a folder: open it to look at what is inside."
+        lines.push(said_about(
+            &fetched.folders,
+            key("preview.folder_one"),
+            key("preview.folder_many"),
+            &[],
         ));
     }
     if !fetched.failed.is_empty() {
-        let (who, _) = named(&fetched.failed);
-        lines.push(format!("{who} could not be fetched."));
+        lines.push(said_about(
+            &fetched.failed,
+            key("preview.failed_one"),
+            key("preview.failed_many"),
+            &[],
+        ));
     }
     if fetched.left_out > 0 {
-        lines.push(format!(
-            "Only the first {} are shown; {} more were left out.",
-            dto::PREVIEW_MOST,
-            format_count(fetched.left_out)
+        lines.push(tf(
+            "preview.left_out",
+            &[
+                ("shown", &dto::PREVIEW_MOST.to_string()),
+                ("left", &format_count(fetched.left_out)),
+            ],
         ));
     }
     (!lines.is_empty()).then(|| lines.join(" "))
+}
+
+fn said_about(
+    names: &[String],
+    one: &'static str,
+    many: &'static str,
+    more_args: &[(&str, &str)],
+) -> String {
+    let mut args = more_args.to_vec();
+    match names {
+        [name] => {
+            args.push(("name", name));
+            tf(one, &args)
+        }
+        [first, rest @ ..] => {
+            let more = format_count(rest.len());
+            args.push(("first", first));
+            args.push(("more", &more));
+            tf(many, &args)
+        }
+        [] => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -157,5 +199,45 @@ mod tests {
             refusals(&to_open, Purpose::Share).unwrap(),
             "“huge.mov” is too big to share from the phone (1.0 GB at most): download it first."
         );
+    }
+
+    #[test]
+    fn the_banner_and_the_refusals_are_whole_sentences_in_every_language() {
+        use internal::dto::Language;
+
+        let fetched = dto::Fetched {
+            too_big: vec!["huge.mov".into(), "big.mov".into()],
+            folders: vec!["Camera".into()],
+            failed: vec!["x.jpg".into(), "y.jpg".into(), "z.jpg".into()],
+            left_out: 1_234,
+            ..Default::default()
+        };
+        let progress = dto::TransferProgress {
+            bytes_done: 1_000_000,
+            bytes_total: 4_000_000,
+            ..Default::default()
+        };
+
+        for language in Language::ALL {
+            crate::i18n::with_language(language, || {
+                for purpose in [Purpose::Look, Purpose::Open, Purpose::Share] {
+                    let said = refusals(&fetched, purpose).unwrap();
+                    for word in ["huge.mov", "Camera", "x.jpg", "1.0 GB", "1,234", "2", "20"] {
+                        assert!(said.contains(word), "{language:?} {purpose:?}: {said}");
+                    }
+                    assert!(!said.contains(['{', '}']), "{language:?}: {said}");
+                    for names in [
+                        vec!["a.mp4".to_owned()],
+                        vec!["a".to_owned(), "b".to_owned()],
+                    ] {
+                        for progress in [None, Some(&progress)] {
+                            let line = fetching_line(&names, progress, purpose);
+                            assert!(!line.contains(['{', '}']), "{language:?}: {line}");
+                            assert_eq!(line.contains("1.0 MB"), progress.is_some(), "{line}");
+                        }
+                    }
+                }
+            });
+        }
     }
 }

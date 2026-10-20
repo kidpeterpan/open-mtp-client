@@ -9,6 +9,22 @@ use chrono::{Datelike, NaiveDate};
 use internal::dto::{Entry, FileKind, GroupBy};
 
 use crate::handler::format::format_bytes;
+use crate::i18n::{count, key, t, tf};
+
+const LONG_MONTH_KEYS: [&str; 12] = [
+    key("month.long.1"),
+    key("month.long.2"),
+    key("month.long.3"),
+    key("month.long.4"),
+    key("month.long.5"),
+    key("month.long.6"),
+    key("month.long.7"),
+    key("month.long.8"),
+    key("month.long.9"),
+    key("month.long.10"),
+    key("month.long.11"),
+    key("month.long.12"),
+];
 
 /// Rows `start..start + len` under one header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,14 +39,14 @@ pub struct Group {
 impl Group {
     /// What the header says after the label: "12 items, 40.0 MB".
     pub fn summary(&self) -> String {
-        let items = match self.len {
-            1 => "1 item".to_owned(),
-            n => format!("{} items", crate::handler::format::format_count(n)),
-        };
+        let items = count("text.items", self.len, &[]);
         if self.bytes == 0 {
             items
         } else {
-            format!("{items}, {}", format_bytes(self.bytes))
+            tf(
+                "explorer.group.summary",
+                &[("items", &items), ("size", &format_bytes(self.bytes))],
+            )
         }
     }
 }
@@ -59,19 +75,25 @@ pub fn bucket(by: GroupBy, entry: &Entry, today: NaiveDate) -> (u32, String) {
 /// one dated after today first.
 pub fn date_bucket(day: Option<NaiveDate>, today: NaiveDate) -> (u32, String) {
     let Some(day) = day else {
-        return (u32::MAX, "No Date".to_owned());
+        return (u32::MAX, t("explorer.group.no_date").to_owned());
     };
     let ago = (today - day).num_days();
     match ago {
-        ..0 => (0, "Later".to_owned()),
-        0 => (1, "Today".to_owned()),
-        1 => (2, "Yesterday".to_owned()),
-        2..=7 => (3, "Previous 7 Days".to_owned()),
-        8..=30 => (4, "Previous 30 Days".to_owned()),
+        ..0 => (0, t("explorer.group.later").to_owned()),
+        0 => (1, t("explorer.group.today").to_owned()),
+        1 => (2, t("explorer.group.yesterday").to_owned()),
+        2..=7 => (3, t("explorer.group.previous_7").to_owned()),
+        8..=30 => (4, t("explorer.group.previous_30").to_owned()),
         _ if day.year() == today.year() => (
             // This year's months, newest first.
             10 + (12 - day.month()),
-            day.format("%B %Y").to_string(),
+            tf(
+                "explorer.group.month",
+                &[
+                    ("month", t(LONG_MONTH_KEYS[day.month0() as usize])),
+                    ("year", &day.year().to_string()),
+                ],
+            ),
         ),
         _ => (
             100 + u32::try_from(today.year() - day.year()).unwrap_or(u32::MAX - 101),
@@ -82,15 +104,15 @@ pub fn date_bucket(day: Option<NaiveDate>, today: NaiveDate) -> (u32, String) {
 
 fn kind_bucket(entry: &Entry) -> (u32, String) {
     if entry.is_folder {
-        return (0, "Folders".to_owned());
+        return (0, t("explorer.group.folders").to_owned());
     }
     match FileKind::of(&entry.name) {
-        Some(FileKind::Photo) => (1, "Photos".to_owned()),
-        Some(FileKind::Video) => (2, "Videos".to_owned()),
-        Some(FileKind::Music) => (3, "Music".to_owned()),
-        Some(FileKind::Document) => (4, "Documents".to_owned()),
-        Some(FileKind::Archive) => (5, "Archives".to_owned()),
-        None => (9, "Other".to_owned()),
+        Some(FileKind::Photo) => (1, t("label.kind.photos").to_owned()),
+        Some(FileKind::Video) => (2, t("label.kind.videos").to_owned()),
+        Some(FileKind::Music) => (3, t("label.kind.music").to_owned()),
+        Some(FileKind::Document) => (4, t("label.kind.documents").to_owned()),
+        Some(FileKind::Archive) => (5, t("label.kind.archives").to_owned()),
+        None => (9, t("explorer.group.other").to_owned()),
     }
 }
 
@@ -99,20 +121,20 @@ fn size_bucket(entry: &Entry) -> (u32, String) {
     const MB: u64 = 1_000_000;
     const GB: u64 = 1_000_000_000;
     if entry.is_folder {
-        return (0, "Folders".to_owned());
+        return (0, t("explorer.group.folders").to_owned());
     }
     // MTP's "4 GB or more".
     let size = entry.size_bytes;
     let (rank, label) = match size {
-        _ if size == u64::from(u32::MAX) || size >= GB => (1, "1 GB or More"),
-        _ if size >= 100 * MB => (2, "100 MB to 1 GB"),
-        _ if size >= 10 * MB => (3, "10 to 100 MB"),
-        _ if size >= MB => (4, "1 to 10 MB"),
-        _ if size >= 100 * KB => (5, "100 KB to 1 MB"),
-        0 => (7, "Empty"),
-        _ => (6, "Under 100 KB"),
+        _ if size == u64::from(u32::MAX) || size >= GB => (1, key("explorer.group.size_1gb")),
+        _ if size >= 100 * MB => (2, key("explorer.group.size_100mb")),
+        _ if size >= 10 * MB => (3, key("explorer.group.size_10mb")),
+        _ if size >= MB => (4, key("explorer.group.size_1mb")),
+        _ if size >= 100 * KB => (5, key("explorer.group.size_100kb")),
+        0 => (7, key("explorer.group.size_empty")),
+        _ => (6, key("explorer.group.size_small")),
     };
-    (rank, label.to_owned())
+    (rank, t(label).to_owned())
 }
 
 /// Puts the rows in group order (stable: within a group, as they were) and

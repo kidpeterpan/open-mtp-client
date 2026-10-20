@@ -29,6 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio-util = { version = "0.7", features = ["io"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+sys-locale = "0.3"
 # Telling duplicate files apart by their whole contents (Free Up Space).
 sha2 = "0.11"
 # The Dock icon's progress bar and notifications (local/dock.rs): the same

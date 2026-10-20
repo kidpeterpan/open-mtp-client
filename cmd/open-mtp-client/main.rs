@@ -1,5 +1,6 @@
 mod app;
 mod handler;
+mod i18n;
 mod keymap;
 mod packaging;
 mod placement;

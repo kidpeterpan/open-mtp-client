@@ -2,6 +2,7 @@ use internal::dto;
 
 use super::response::{DeviceResponse, PhoneResponse, StorageResponse};
 use crate::handler::format::format_bytes;
+use crate::i18n::{key, t, tf};
 
 pub fn to_device_response(device: &dto::Device) -> DeviceResponse {
     let details = [&device.manufacturer, &device.serial_number]
@@ -15,8 +16,8 @@ pub fn to_device_response(device: &dto::Device) -> DeviceResponse {
     // camera's firmware, say) is shown as the version it is.
     let version = match (device.android, device.firmware_version.trim()) {
         (_, "") => String::new(),
-        (true, release) => format!("Android {release}"),
-        (false, other) => format!("Version {other}"),
+        (true, release) => tf("device.version_android", &[("release", release)]),
+        (false, other) => tf("device.version_other", &[("other", other)]),
     };
     DeviceResponse {
         key: device.key.clone(),
@@ -28,12 +29,14 @@ pub fn to_device_response(device: &dto::Device) -> DeviceResponse {
         serial: device.serial_number.clone(),
         abilities: device.abilities,
         android: device.android,
+        source: device.clone(),
+        battery_level: None,
     }
 }
 
 /// "Battery 76%", or `None` when the phone does not say.
 pub fn battery_label(level: Option<u8>) -> Option<String> {
-    level.map(|level| format!("Battery {level}%"))
+    level.map(|level| tf("device.battery", &[("level", &level.to_string())]))
 }
 
 /// The phones plugged in, named so that two can be told apart: two of the
@@ -42,7 +45,7 @@ pub fn battery_label(level: Option<u8>) -> Option<String> {
 pub fn to_phone_responses(phones: &[dto::Phone]) -> Vec<PhoneResponse> {
     let base = |phone: &dto::Phone| {
         if phone.model.is_empty() {
-            "Phone".to_owned()
+            t("device.phone_fallback").to_owned()
         } else {
             phone.model.clone()
         }
@@ -65,6 +68,7 @@ pub fn to_phone_responses(phones: &[dto::Phone]) -> Vec<PhoneResponse> {
             PhoneResponse {
                 key: phone.key.clone(),
                 name,
+                source: phone.clone(),
             }
         })
         .collect()
@@ -80,33 +84,36 @@ pub fn to_storage_response(storage: &dto::Storage) -> StorageResponse {
     StorageResponse {
         id: storage.id,
         name: storage.name.clone(),
-        usage: format!(
-            "{} free of {}",
-            format_bytes(storage.free_bytes),
-            format_bytes(storage.capacity_bytes)
+        usage: tf(
+            "device.usage",
+            &[
+                ("free", &format_bytes(storage.free_bytes)),
+                ("capacity", &format_bytes(storage.capacity_bytes)),
+            ],
         ),
         used_fraction,
         read_only: !storage.is_writable,
+        source: storage.clone(),
     }
 }
 
 /// The folders most phones have that people go to most, each with the
 /// places it is found on different phones and Android versions, first first.
 pub const PHONE_PLACES: &[(&str, &[&str])] = &[
-    ("Camera", &["/DCIM/Camera"]),
+    (key("device.place.camera"), &["/DCIM/Camera"]),
     (
-        "Screenshots",
+        key("device.place.screenshots"),
         &["/DCIM/Screenshots", "/Pictures/Screenshots"],
     ),
-    ("Downloads", &["/Download"]),
+    (key("device.place.downloads"), &["/Download"]),
     (
-        "WhatsApp media",
+        key("device.place.whatsapp"),
         &[
             "/Android/media/com.whatsapp/WhatsApp/Media",
             "/WhatsApp/Media",
         ],
     ),
-    ("Music", &["/Music"]),
+    (key("device.place.music"), &["/Music"]),
 ];
 
 /// Every path worth asking about.
@@ -125,7 +132,20 @@ pub fn to_places(present: &[String]) -> Vec<(String, String)> {
             paths
                 .iter()
                 .find(|path| present.iter().any(|found| found == *path))
-                .map(|path| ((*label).to_owned(), (*path).to_owned()))
+                .map(|path| (t(label).to_owned(), (*path).to_owned()))
+        })
+        .collect()
+}
+
+pub fn relabelled(places: &[(String, String)]) -> Vec<(String, String)> {
+    places
+        .iter()
+        .map(|(label, path)| {
+            let named = PHONE_PLACES
+                .iter()
+                .find(|(_, paths)| paths.contains(&path.as_str()))
+                .map_or_else(|| label.clone(), |(message, _)| t(message).to_owned());
+            (named, path.clone())
         })
         .collect()
 }

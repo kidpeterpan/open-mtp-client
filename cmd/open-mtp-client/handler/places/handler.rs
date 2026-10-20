@@ -10,6 +10,7 @@ use internal::dto;
 use super::mapper;
 use crate::handler::drop_spot::{SidebarDrop, drop_spot};
 use crate::handler::error;
+use crate::i18n::{english_only, t, tf};
 
 #[async_trait::async_trait]
 pub trait Service: Send + Sync {
@@ -74,6 +75,10 @@ impl Handler {
         }
     }
 
+    pub fn language_changed(&mut self) {
+        self.notice = None;
+    }
+
     /// The saved mirror at `at` in the whole list.
     pub fn mirror(&self, at: usize) -> Option<&dto::SavedMirror> {
         self.mirrors.get(at)
@@ -95,9 +100,9 @@ impl Handler {
         {
             *kept = mirror;
         } else if self.mirrors.len() >= dto::MOST_MIRRORS {
-            self.notice = Some(format!(
-                "{} mirrors are saved already: forget one first.",
-                dto::MOST_MIRRORS
+            self.notice = Some(tf(
+                "places.mirrors_full",
+                &[("count", &dto::MOST_MIRRORS.to_string())],
             ));
             return;
         } else {
@@ -125,9 +130,9 @@ impl Handler {
             return;
         }
         if self.pins.len() >= dto::MOST_PINS {
-            self.notice = Some(format!(
-                "{} folders are pinned already: unpin one first.",
-                dto::MOST_PINS
+            self.notice = Some(tf(
+                "places.pins_full",
+                &[("count", &dto::MOST_PINS.to_string())],
             ));
             return;
         }
@@ -226,11 +231,11 @@ impl Handler {
 
         let mut list = column![
             rule::horizontal(1),
-            heading("Places"),
+            heading(t("places.title")),
             column(self.places.iter().map(|place| {
                 entry(
-                    place.label.clone(),
-                    place.volume.then_some("disk"),
+                    mapper::place_label(place),
+                    place.volume.then_some(t("places.tag.disk")),
                     place.space.as_ref(),
                     mac_path == Some(place.path.as_str()),
                     Target::Mac(place.path.clone()),
@@ -260,7 +265,11 @@ impl Handler {
             let both = shown.iter().any(|(_, pin, _)| pin.phone.is_some())
                 && shown.iter().any(|(_, pin, _)| pin.phone.is_none());
             let rows = shown.into_iter().map(|(at, pin, target)| {
-                let tag = both.then_some(if pin.phone.is_some() { "phone" } else { "Mac" });
+                let tag = both.then_some(if pin.phone.is_some() {
+                    t("places.tag.phone")
+                } else {
+                    english_only("Mac")
+                });
                 row![
                     entry(pin.label.clone(), tag, None, false, target),
                     button(text("×").size(13))
@@ -273,7 +282,7 @@ impl Handler {
             });
             list = list
                 .push(rule::horizontal(1))
-                .push(heading("Pinned"))
+                .push(heading(t("places.pinned")))
                 .push(column(rows).spacing(2));
         }
         // The open phone's saved mirrors, on storages it has now: a click
@@ -287,8 +296,8 @@ impl Handler {
                     .filter_map(|(at, mirror)| {
                         let storage_id = mapper::storage_of(&mirror.phone, &open.storages)?;
                         let tag = match mirror.direction {
-                            dto::MirrorDirection::ToMac => "to Mac",
-                            dto::MirrorDirection::ToPhone => "to phone",
+                            dto::MirrorDirection::ToMac => t("places.tag.to_mac"),
+                            dto::MirrorDirection::ToPhone => t("places.tag.to_phone"),
                         };
                         let open_it = button(
                             row![
@@ -325,7 +334,7 @@ impl Handler {
         if !mirrors.is_empty() {
             list = list
                 .push(rule::horizontal(1))
-                .push(heading("Mirrors"))
+                .push(heading(t("places.mirrors")))
                 .push(column(mirrors).spacing(2));
         }
         if let Some(notice) = &self.notice {
@@ -402,6 +411,90 @@ mod tests {
         assert!(
             !shows(handler.view(None, None, None), "Pinned"),
             "nothing pinned yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_four_fixed_places_are_named_in_the_language_by_their_path_and_a_disk_keeps_its_name()
+     {
+        use internal::dto::Language;
+
+        let mut service = FakePlaces::default();
+        service.places.push(dto::Place {
+            label: "Downloads".into(),
+            path: "/Volumes/Downloads".into(),
+            volume: true,
+            space: None,
+        });
+        let (handler, _) = loaded(service).await;
+
+        for language in Language::ALL {
+            crate::i18n::with_language(language, || {
+                let view = || handler.view(None, None, None);
+                assert!(shows(view(), crate::i18n::t("places.home")), "{language:?}");
+                assert!(
+                    shows(view(), crate::i18n::t("places.downloads")),
+                    "{language:?}"
+                );
+                assert!(
+                    shows(view(), crate::i18n::t("places.title")),
+                    "{language:?}"
+                );
+                assert!(
+                    shows(view(), "Backup"),
+                    "a disk is called what it is called"
+                );
+                assert!(
+                    shows(view(), "Downloads"),
+                    "a disk that is called Downloads still is"
+                );
+            });
+        }
+        crate::i18n::with_language(Language::Thai, || {
+            assert!(!shows(handler.view(None, None, None), "Places"));
+        });
+    }
+
+    #[tokio::test]
+    async fn a_change_of_language_clears_the_notice_and_keeps_pins_and_mirrors() {
+        let (mut handler, _) = loaded(FakePlaces::default()).await;
+        handler.pin(mac_pin("/Users/me/Music", "Music"));
+        handler.refuse("one thing and another".into());
+        assert!(shows(
+            handler.view(None, None, None),
+            "one thing and another"
+        ));
+
+        crate::i18n::set_language(dto::Language::Japanese);
+        handler.language_changed();
+
+        assert!(!shows(
+            handler.view(None, None, None),
+            "one thing and another"
+        ));
+        assert!(shows(handler.view(None, None, None), "Music"));
+        assert_eq!(handler.pins.len(), 1);
+    }
+
+    #[test]
+    fn a_full_list_of_pins_says_so_in_the_language_in_use() {
+        let mut handler = Handler::new(Arc::new(FakePlaces::default()));
+        for at in 0..dto::MOST_PINS {
+            handler.pin(mac_pin(&format!("/Users/me/{at}"), "x"));
+        }
+        crate::i18n::set_language(dto::Language::ChineseSimplified);
+
+        handler.pin(mac_pin("/Users/me/one-more", "x"));
+
+        assert_eq!(
+            handler.notice.as_deref(),
+            Some(
+                crate::i18n::tf(
+                    "places.pins_full",
+                    &[("count", &dto::MOST_PINS.to_string())]
+                )
+                .as_str()
+            )
         );
     }
 

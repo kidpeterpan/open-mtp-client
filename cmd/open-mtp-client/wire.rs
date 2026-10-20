@@ -36,6 +36,7 @@ pub struct Handlers {
     pub places: handler::places::Handler,
     pub info: handler::info::Handler,
     pub menubar: handler::menubar::Handler,
+    pub languages: Arc<dyn local::Languages>,
 }
 
 pub fn initialize() -> Handlers {
@@ -133,6 +134,7 @@ pub fn initialize() -> Handlers {
         menubar: handler::menubar::Handler::new(Arc::new(MenuBar {
             bar: Arc::new(local::SystemMenuBar),
         })),
+        languages: Arc::new(local::SystemLanguages),
     }
 }
 

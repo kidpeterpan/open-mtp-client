@@ -21,6 +21,8 @@ pub struct DeviceResponse {
     pub abilities: dto::Abilities,
     /// It is Android, which keeps apps' own folders from computers.
     pub android: bool,
+    pub source: dto::Device,
+    pub battery_level: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +33,7 @@ pub struct StorageResponse {
     /// 0.0 (empty) to 1.0 (full), for the usage bar.
     pub used_fraction: f32,
     pub read_only: bool,
+    pub source: dto::Storage,
 }
 
 /// A phone plugged in, for the list in the sidebar.
@@ -40,4 +43,5 @@ pub struct PhoneResponse {
     /// Its model, with the end of its serial number when another phone
     /// plugged in has the same name.
     pub name: String,
+    pub source: dto::Phone,
 }

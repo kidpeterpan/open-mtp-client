@@ -30,6 +30,12 @@ pub fn filters_inline(width: u16) -> bool {
     width >= FILTERS_INLINE
 }
 
+pub const MENUS_BESIDE_FILTER: u16 = 340;
+
+pub fn menus_beside_filter(width: u16) -> bool {
+    width >= MENUS_BESIDE_FILTER
+}
+
 /// The narrowest Name is let get by the other columns.
 pub const NAME_LEAST: u16 = 140;
 /// The narrowest Modified is squeezed to in a very narrow pane.

@@ -9,6 +9,7 @@ use internal::dto;
 use super::mapper;
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::i18n::t;
 
 /// Where Get Info's items are.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +128,14 @@ impl Handler {
         )
     }
 
+    pub fn language_changed(&mut self) {
+        if let Some(shown) = &mut self.shown
+            && let Some(error) = &shown.error
+        {
+            shown.error = Some(error.reworded());
+        }
+    }
+
     /// Closes the dialog and stops its count.
     pub fn close(&mut self) {
         if let Some(cancel) = self.cancel.take() {
@@ -190,7 +199,7 @@ impl Handler {
         let mut content = column![
             row![
                 text(info.title).size(20).width(Length::Fill),
-                button(text("Done"))
+                button(text(t("label.done")))
                     .style(button::primary)
                     .on_press(Message::Request(Request::Close)),
             ]
@@ -330,6 +339,61 @@ mod tests {
 
     fn shown_tally(handler: &Handler) -> dto::Tally {
         handler.shown.as_ref().unwrap().tally
+    }
+
+    fn says(handler: &Handler, wanted: &str) -> bool {
+        iced_test::simulator(handler.view())
+            .find(wanted.to_owned())
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn an_open_count_is_said_again_in_the_new_language_from_what_was_counted() {
+        let mut counted = dto::Tally::default();
+        counted.add_file("clip.mp4", Some(4_000));
+        counted.add_file("IMG_1.jpg", Some(1_000));
+        let mut handler = Handler::new(Arc::new(FakeInfo::counting(counted)));
+        let task = handler.open(phone_subject(Vec::new()));
+        for message in drain(task).await.0 {
+            let _ = handler.update(message);
+        }
+        assert!(says(&handler, "Videos 4.0 KB"));
+        assert!(says(&handler, "Folder"));
+
+        crate::i18n::set_language(dto::Language::Japanese);
+        handler.language_changed();
+
+        let videos = crate::i18n::tf(
+            "info.kind_share",
+            &[
+                ("kind", crate::i18n::t("label.kind.videos")),
+                ("size", "4.0 KB"),
+            ],
+        );
+        assert!(says(&handler, &videos));
+        assert!(!says(&handler, "Videos 4.0 KB"));
+        assert!(says(&handler, crate::i18n::t("explorer.kind.folder")));
+        assert!(says(&handler, crate::i18n::t("label.done")));
+        assert_eq!(shown_tally(&handler).files, 2, "what was counted is kept");
+    }
+
+    #[test]
+    fn a_count_that_failed_says_why_again_in_the_new_language() {
+        let mut handler = Handler::new(Arc::new(FakeInfo::failing(dto::Error::Timeout)));
+        let _ = handler.open(phone_subject(vec![folder("Camera")]));
+        let run = handler.run;
+        let _ = handler.update(Message::Finished {
+            run,
+            result: Err(error::to_error_response(dto::Error::Timeout)),
+        });
+        let english = handler.shown.as_ref().unwrap().error.clone().unwrap().title;
+
+        crate::i18n::set_language(dto::Language::Thai);
+        handler.language_changed();
+
+        let said = handler.shown.as_ref().unwrap().error.clone().unwrap().title;
+        assert_ne!(said, english);
+        assert_eq!(said, error::to_error_response(dto::Error::Timeout).title);
     }
 
     #[tokio::test]

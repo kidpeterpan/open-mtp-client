@@ -15,6 +15,7 @@ use internal::dto;
 use super::mapper::{self, Line};
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::i18n::{t, tf};
 
 /// Told how a look, or a removal, is going.
 pub type Told<T> = Box<dyn Fn(T) + Send + Sync>;
@@ -70,8 +71,15 @@ enum Stage {
     Looking(Option<dto::SpaceProgress>),
     Ready,
     Confirming,
-    Removing { done: usize, total: usize },
-    Done { title: String, notes: Vec<String> },
+    Removing {
+        done: usize,
+        total: usize,
+    },
+    Done {
+        removal: dto::Removal,
+        title: String,
+        notes: Vec<String>,
+    },
     Failed(ErrorResponse),
 }
 
@@ -136,6 +144,25 @@ impl Handler {
             cancel: dto::Cancel::new(),
         });
         self.look()
+    }
+
+    pub fn language_changed(&mut self) {
+        let today = (self.today)();
+        let Some(dialog) = self.dialog.as_mut() else {
+            return;
+        };
+        if !dialog.lines.is_empty() {
+            dialog.lines = mapper::lines(&dialog.report, today);
+        }
+        match &mut dialog.stage {
+            Stage::Failed(error) => *error = error.reworded(),
+            Stage::Done {
+                removal,
+                title,
+                notes,
+            } => (*title, *notes) = mapper::removed(removal),
+            _ => {}
+        }
     }
 
     /// Closes the dialog, stopping what it was doing (between windows or
@@ -304,8 +331,13 @@ impl Handler {
                 {
                     dialog.stage = match result {
                         Ok(removal) => {
+                            note_problems(&removal);
                             let (title, notes) = mapper::removed(&removal);
-                            Stage::Done { title, notes }
+                            Stage::Done {
+                                removal,
+                                title,
+                                notes,
+                            }
                         }
                         Err(error) => Stage::Failed(error),
                     };
@@ -322,19 +354,22 @@ impl Handler {
             return space().into();
         };
         let send = Message::Request;
-        let close = button(text("Close"))
+        let close = button(text(t("label.close")))
             .style(button::secondary)
             .on_press(send(Request::Close));
-        let biggest = button(text("Biggest Files…"))
+        let biggest = button(text(t("space.biggest_files")))
             .style(button::secondary)
             .on_press(send(Request::BiggestFiles));
         let body: Element<'_, Message> = match &dialog.stage {
             Stage::Looking(progress) => column![
                 text(mapper::looking(*progress)),
-                text("Copies are told apart by size, then by their first and last 64 KB, and only then read in full: nothing is called a copy on a guess.")
-                    .size(12)
-                    .style(text::secondary),
-                row![space::horizontal(), button(text("Stop")).style(button::secondary).on_press(send(Request::Close))],
+                text(t("space.explain")).size(12).style(text::secondary),
+                row![
+                    space::horizontal(),
+                    button(text(t("space.stop")))
+                        .style(button::secondary)
+                        .on_press(send(Request::Close))
+                ],
             ]
             .spacing(12)
             .into(),
@@ -344,19 +379,27 @@ impl Handler {
                 row![
                     space::horizontal(),
                     close,
-                    button(text("Look Again")).style(button::primary).on_press(send(Request::LookAgain)),
+                    button(text(t("space.look_again")))
+                        .style(button::primary)
+                        .on_press(send(Request::LookAgain)),
                 ]
                 .spacing(8),
             ]
             .spacing(8)
             .into(),
-            Stage::Done { title, notes } => column![text(title).size(16)]
-                .extend(notes.iter().map(|note| text(note).size(12).style(text::secondary).into()))
+            Stage::Done { title, notes, .. } => column![text(title).size(16)]
+                .extend(
+                    notes
+                        .iter()
+                        .map(|note| text(note).size(12).style(text::secondary).into()),
+                )
                 .push(
                     row![
                         space::horizontal(),
                         close,
-                        button(text("Look Again")).style(button::primary).on_press(send(Request::LookAgain)),
+                        button(text(t("space.look_again")))
+                            .style(button::primary)
+                            .on_press(send(Request::LookAgain)),
                     ]
                     .spacing(8),
                 )
@@ -364,7 +407,12 @@ impl Handler {
                 .into(),
             Stage::Removing { done, total } => column![
                 text(mapper::removing(*done, *total)),
-                row![space::horizontal(), button(text("Stop")).style(button::secondary).on_press(send(Request::Close))],
+                row![
+                    space::horizontal(),
+                    button(text(t("space.stop")))
+                        .style(button::secondary)
+                        .on_press(send(Request::Close))
+                ],
             ]
             .spacing(12)
             .into(),
@@ -375,8 +423,12 @@ impl Handler {
                         text(mapper::confirm(picked, dialog.picked_bytes)).size(13),
                         row![
                             space::horizontal(),
-                            button(text("Keep Them")).style(button::secondary).on_press(send(Request::KeepThem)),
-                            button(text("Delete")).style(button::danger).on_press(send(Request::ConfirmRemove)),
+                            button(text(t("space.keep_them")))
+                                .style(button::secondary)
+                                .on_press(send(Request::KeepThem)),
+                            button(text(t("label.delete")))
+                                .style(button::danger)
+                                .on_press(send(Request::ConfirmRemove)),
                         ]
                         .spacing(8),
                     ]
@@ -397,13 +449,19 @@ impl Handler {
                 column![
                     text(mapper::found(&dialog.report)).size(14),
                     row![
-                        button(text("Select Copies").size(13))
+                        button(text(t("space.select_copies")).size(13))
                             .style(button::secondary)
-                            .on_press_maybe((!dialog.report.duplicates.is_empty()).then(|| send(Request::SelectCopies))),
-                        button(text("Select Imported").size(13))
+                            .on_press_maybe(
+                                (!dialog.report.duplicates.is_empty())
+                                    .then(|| send(Request::SelectCopies))
+                            ),
+                        button(text(t("space.select_imported")).size(13))
                             .style(button::secondary)
-                            .on_press_maybe((!dialog.report.imported.is_empty()).then(|| send(Request::SelectImported))),
-                        button(text("Select None").size(13))
+                            .on_press_maybe(
+                                (!dialog.report.imported.is_empty())
+                                    .then(|| send(Request::SelectImported))
+                            ),
+                        button(text(t("space.select_none")).size(13))
                             .style(button::text)
                             .on_press_maybe((picked > 0).then(|| send(Request::SelectNone))),
                     ]
@@ -417,7 +475,7 @@ impl Handler {
         };
         container(
             column![
-                text(format!("Free Up Space on {}", dialog.storage)).size(20),
+                text(tf("space.title", &[("storage", &dialog.storage)])).size(20),
                 rule::horizontal(1),
                 body,
             ]
@@ -427,6 +485,16 @@ impl Handler {
         .width(Length::Fixed(640.0))
         .style(container::rounded_box)
         .into()
+    }
+}
+
+fn note_problems(removal: &dto::Removal) {
+    let refused = removal.kept.iter().filter_map(|kept| match &kept.why {
+        dto::Why::Refused(error) => Some(error),
+        _ => None,
+    });
+    for error in refused.chain(removal.stopped.iter()) {
+        error::note_shown(error);
     }
 }
 
@@ -494,7 +562,7 @@ impl Dialog {
                     .spacing(8)
                     .align_y(Alignment::Center);
                     if *original {
-                        line = line.push(text("Original").size(11).style(text::success));
+                        line = line.push(text(t("space.original")).size(11).style(text::success));
                     }
                     line.push(text(detail).size(11).style(text::secondary))
                         .into()
@@ -590,6 +658,83 @@ mod tests {
         assert!(ui.find("Original").is_ok());
         assert!(ui.find("/WhatsApp/IMG-1.jpg").is_ok());
         assert!(ui.find("Remove…").is_ok(), "nothing picked yet");
+    }
+
+    #[tokio::test]
+    async fn a_change_of_language_words_the_list_the_result_and_a_failure_again_keeping_the_picks()
+    {
+        use internal::dto::Language;
+
+        let (mut handler, _) = looked(FakeSpace {
+            report: Ok(report()),
+            removal: Ok(dto::Removal {
+                removed: 1,
+                freed: 300_000,
+                kept: vec![dto::Kept {
+                    label: "/WhatsApp/IMG-1.jpg".into(),
+                    why: dto::Why::Changed,
+                }],
+                ..Default::default()
+            }),
+            ..FakeSpace::default()
+        })
+        .await;
+        let _ = ask(&mut handler, Request::SelectCopies);
+        assert_eq!(picked(&handler), (2, 600_000));
+        let says = |handler: &Handler, wanted: &str| {
+            iced_test::simulator(handler.view())
+                .find(wanted.to_owned())
+                .is_ok()
+        };
+        assert!(says(&handler, "Original"));
+
+        crate::i18n::set_language(Language::Japanese);
+        handler.language_changed();
+
+        for key in ["space.original", "space.select_copies", "space.no_two_same"] {
+            let wanted = crate::i18n::t(key);
+            if key != "space.no_two_same" {
+                assert!(says(&handler, wanted), "{key}");
+            }
+        }
+        assert!(!says(&handler, "Original"));
+        let heading = crate::i18n::tf("space.heading_copies", &[("size", "600.0 KB")]);
+        assert!(says(&handler, &heading));
+        assert_eq!(picked(&handler), (2, 600_000), "the picks stay");
+
+        let _ = ask(&mut handler, Request::Remove);
+        let task = ask(&mut handler, Request::ConfirmRemove);
+        for message in drain(task).await.0 {
+            let _ = handler.update(message);
+        }
+        let removed = crate::i18n::tf(
+            "space.removed",
+            &[
+                ("files", &crate::i18n::count("text.files", 1, &[])),
+                ("size", "300.0 KB"),
+            ],
+        );
+        assert!(says(&handler, &removed));
+        crate::i18n::set_language(Language::Thai);
+        handler.language_changed();
+        let removed = crate::i18n::tf(
+            "space.removed",
+            &[
+                ("files", &crate::i18n::count("text.files", 1, &[])),
+                ("size", "300.0 KB"),
+            ],
+        );
+        assert!(says(&handler, &removed), "what was done is said again");
+
+        let (mut failed, _) = looked(FakeSpace {
+            report: Err(dto::Error::Timeout),
+            ..FakeSpace::default()
+        })
+        .await;
+        crate::i18n::set_language(Language::ChineseSimplified);
+        failed.language_changed();
+        let title = error::to_error_response(dto::Error::Timeout).title;
+        assert!(says(&failed, &title));
     }
 
     #[tokio::test]

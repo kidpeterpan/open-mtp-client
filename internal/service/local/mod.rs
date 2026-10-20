@@ -1,5 +1,6 @@
 mod awake;
 mod dock;
+mod language;
 pub(crate) mod mapper;
 mod menubar;
 mod opener;
@@ -12,6 +13,7 @@ mod tally;
 
 pub use awake::{AWAKE_REASON, Awake, RecordingAwake, SystemAwake};
 pub use dock::{Dock, RecordingDock, SystemDock, dock_tile_png};
+pub use language::{Languages, RecordingLanguages, SystemLanguages};
 pub use menubar::{
     MenuBar, OnClick, RecordingMenuBar, SystemMenuBar, menu_choose, menu_item_state, menu_press,
     submenu_choose, submenu_items,

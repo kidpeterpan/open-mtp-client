@@ -1,4 +1,4 @@
-use internal::dto::{Density, ThemeChoice};
+use internal::dto::{Density, LanguageChoice, ThemeChoice};
 
 /// What the user changed in the Settings dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,4 +17,5 @@ pub enum Request {
     /// A phone delete keeps a copy in the Mac's Trash first.
     SetKeepDeleted(bool),
     SetDensity(Density),
+    SetLanguage(LanguageChoice),
 }

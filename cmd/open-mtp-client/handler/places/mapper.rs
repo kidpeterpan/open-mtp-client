@@ -1,5 +1,21 @@
 use internal::dto;
 
+use crate::i18n::{english_only, t, tf};
+
+pub fn place_label(place: &dto::Place) -> String {
+    if place.volume {
+        return place.label.clone();
+    }
+    let folder = place.path.trim_end_matches('/').rsplit('/').next();
+    let label = match folder {
+        Some("Desktop") => t("places.desktop"),
+        Some("Downloads") => t("places.downloads"),
+        Some("Pictures") => t("places.pictures"),
+        _ => t("places.home"),
+    };
+    label.to_owned()
+}
+
 /// A pinned folder's label: its name, or for the top of a storage or of the
 /// Mac, the storage's or the disk's name.
 pub fn pin_label(path: &str, top: &str) -> String {
@@ -24,7 +40,7 @@ pub fn storage_of(pin: &dto::PinPhone, storages: &[(u64, String)]) -> Option<u64
 /// arrow, and the folder it keeps like it ("Camera → Phone photos").
 pub fn mirror_label(mirror: &dto::SavedMirror) -> String {
     let phone = pin_label(&mirror.phone_folder, &mirror.phone.storage_name);
-    let mac = pin_label(&mirror.mac_folder, "Mac");
+    let mac = pin_label(&mirror.mac_folder, english_only("Mac"));
     match mirror.direction {
         dto::MirrorDirection::ToMac => format!("{phone} → {mac}"),
         dto::MirrorDirection::ToPhone => format!("{mac} → {phone}"),
@@ -41,10 +57,15 @@ pub fn disk_usage(space: &dto::DiskSpace) -> (f32, String) {
     };
     (
         used.clamp(0.0, 1.0),
-        format!(
-            "{} free of {}",
-            crate::handler::format::format_bytes(space.free),
-            crate::handler::format::format_bytes(space.capacity)
+        tf(
+            "places.free_of",
+            &[
+                ("free", &crate::handler::format::format_bytes(space.free)),
+                (
+                    "total",
+                    &crate::handler::format::format_bytes(space.capacity),
+                ),
+            ],
         ),
     )
 }

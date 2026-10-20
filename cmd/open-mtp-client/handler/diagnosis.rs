@@ -6,6 +6,8 @@ use iced::widget::{column, row, text};
 use iced::{Element, Length};
 use internal::dto;
 
+use crate::i18n::{count, t, tf};
+
 /// One line of "what was checked": ticked when fine, crossed when it is why
 /// the phone didn't connect.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,12 +24,16 @@ pub struct DiagnosisResponse {
     pub quit_label: Option<String>,
 }
 
-/// "A", "A and B", "A, B and C".
 fn join_names(names: &[String]) -> String {
     match names {
         [] => String::new(),
         [only] => only.clone(),
-        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+        [first, middle @ .., last] => {
+            let so_far = middle.iter().fold(first.clone(), |so_far, next| {
+                tf("text.list_next", &[("so_far", &so_far), ("next", next)])
+            });
+            tf("text.list_and", &[("init", &so_far), ("last", last)])
+        }
     }
 }
 
@@ -43,14 +49,18 @@ fn check(ok: bool, text: impl Into<String>) -> CheckResponse {
 /// phone is on USB because it is plugged in, and an app that can hold a phone
 /// is not holding this one, because this app got in.
 pub fn to_connected_response(diagnosis: &dto::Diagnosis, phone: &str) -> DiagnosisResponse {
-    let mut checks = vec![check(true, format!("Connected: {phone}."))];
+    let mut checks = vec![check(true, tf("diagnosis.connected", &[("phone", phone)]))];
     if let Some(phones @ [_, ..]) = diagnosis.phones.as_deref() {
-        checks.push(check(true, format!("Seen on USB: {}.", join_names(phones))));
+        checks.push(check(true, seen_on_usb(phones)));
     }
     DiagnosisResponse {
         checks,
         quit_label: None,
     }
+}
+
+fn seen_on_usb(phones: &[String]) -> String {
+    tf("diagnosis.seen_on_usb", &[("names", &join_names(phones))])
 }
 
 /// The checklist shown under a failed connection, in the order a person would
@@ -59,22 +69,12 @@ pub fn to_diagnosis_response(diagnosis: &dto::Diagnosis) -> DiagnosisResponse {
     let mut checks = Vec::new();
 
     match diagnosis.phones.as_deref() {
-        Some([]) => checks.push(check(
-            false,
-            "No phone seen on USB. Try another cable (some only charge), another port, and no USB hub.",
-        )),
+        Some([]) => checks.push(check(false, t("diagnosis.no_phone_on_usb"))),
         Some(phones) => {
-            let (it, is) = if phones.len() == 1 {
-                ("It is", "isn't")
-            } else {
-                ("They are", "aren't")
-            };
-            checks.push(check(true, format!("Seen on USB: {}.", join_names(phones))));
+            checks.push(check(true, seen_on_usb(phones)));
             checks.push(check(
                 false,
-                format!(
-                    "{it} plugged in but {is} offering file transfer. On the phone, swipe down, tap the USB notification and choose “File transfer”."
-                ),
+                count("diagnosis.not_offering", phones.len(), &[]),
             ));
         }
         None => {}
@@ -83,29 +83,25 @@ pub fn to_diagnosis_response(diagnosis: &dto::Diagnosis) -> DiagnosisResponse {
     let mut quit_label = None;
     match diagnosis.holders.as_deref() {
         Some([]) if diagnosis.unknown_owners.is_empty() => {
-            checks.push(check(true, "No other app is using your phone."));
+            checks.push(check(true, t("diagnosis.no_other_app")));
         }
         Some([]) => {}
         Some(holders) => {
             let names: Vec<String> = holders.iter().map(|h| h.name.clone()).collect();
-            let mut text = if diagnosis.owner_seen {
-                // macOS's own word: it has the phone, not "may".
-                let verb = if holders.len() == 1 { "has" } else { "have" };
-                format!("macOS says {} {verb} your phone.", join_names(&names))
+            let key = if diagnosis.owner_seen {
+                "diagnosis.macos_says"
             } else {
-                let verb = if holders.len() == 1 { "is" } else { "are" };
-                format!("{} {verb} using your phone.", join_names(&names))
+                "diagnosis.using"
             };
+            let mut text = count(key, holders.len(), &[("names", &join_names(&names))]);
             for holder in holders.iter().filter(|holder| holder.restarts) {
-                text.push_str(&format!(
-                    " {} starts again by itself, so if it comes back, quit it once more.",
-                    holder.name
-                ));
+                let restarts = tf("diagnosis.restarts", &[("name", &holder.name)]);
+                text = tf("text.sentences", &[("first", &text), ("second", &restarts)]);
             }
             checks.push(check(false, text));
             quit_label = Some(match holders {
-                [only] => format!("Quit {} and try again", only.name),
-                _ => "Quit them and try again".to_owned(),
+                [only] => tf("diagnosis.quit_one", &[("name", &only.name)]),
+                _ => t("diagnosis.quit_many").to_owned(),
             });
         }
         None => {}
@@ -114,18 +110,14 @@ pub fn to_diagnosis_response(diagnosis: &dto::Diagnosis) -> DiagnosisResponse {
         let quoted: Vec<String> = diagnosis
             .unknown_owners
             .iter()
-            .map(|name| format!("“{name}”"))
+            .map(|name| tf("text.quoted", &[("name", name)]))
             .collect();
-        let (verb, it) = if quoted.len() == 1 {
-            ("has", "it")
-        } else {
-            ("have", "them")
-        };
         checks.push(check(
             false,
-            format!(
-                "macOS says {} {verb} your phone. Quit {it} (Activity Monitor finds it by that name), or restart your Mac if you don't know {it}, then try again.",
-                join_names(&quoted)
+            count(
+                "diagnosis.unknown_owners",
+                quoted.len(),
+                &[("names", &join_names(&quoted))],
             ),
         ));
     }

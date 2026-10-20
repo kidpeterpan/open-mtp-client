@@ -1030,11 +1030,15 @@ mod tests {
         assert_eq!(exit_code(&dto::Error::Timeout), TRY_AGAIN);
         assert_eq!(exit_code(&dto::Error::NameTaken("a".into())), CANT_CREATE);
         assert_eq!(
-            exit_code(&dto::Error::VolumeReadOnly("on “BACKUP”".into())),
+            exit_code(&dto::Error::VolumeReadOnly(dto::Disk::Volume(
+                "BACKUP".into()
+            ))),
             CANT_CREATE
         );
         assert_eq!(
-            exit_code(&dto::Error::TooBigForVolume("on “KINGSTON”".into())),
+            exit_code(&dto::Error::TooBigForVolume(dto::Disk::Volume(
+                "KINGSTON".into()
+            ))),
             CANT_CREATE
         );
         assert_eq!(exit_code(&dto::Error::Unsupported), FAILED);

@@ -5,7 +5,10 @@ use super::handler::{Place, Subject};
 use super::response::InfoResponse;
 use crate::handler::error::ErrorResponse;
 use crate::handler::explorer;
-use crate::handler::format::{abilities_in_words, format_bytes, format_count, format_timestamp};
+use crate::handler::format::{
+    abilities_in_words, comma_list, format_bytes, format_count, format_timestamp,
+};
+use crate::i18n::{count, english_only, t, tf};
 
 /// MTP's size for "4 GB or more": not a size.
 const UNKNOWN_SIZE: u64 = 0xFFFF_FFFF;
@@ -56,59 +59,56 @@ pub fn to_info_response(
     let title = match subject.items.as_slice() {
         [] => own_name(subject),
         [item] => item.name.clone(),
-        items => format!("{} items", format_count(items.len())),
+        items => count("text.items", items.len(), &[]),
     };
 
     row(
-        "Kind",
+        t("label.column.kind"),
         match subject.items.as_slice() {
-            [] => "Folder".to_owned(),
+            [] => t("explorer.kind.folder").to_owned(),
             [item] => explorer::kind(item),
             items => {
                 let folders = items.iter().filter(|item| item.is_folder).count();
-                format!(
-                    "{}, {}",
-                    plural(items.len() - folders, "file"),
-                    plural(folders, "folder")
-                )
+                files_and_folders(items.len() - folders, folders)
             }
         },
     );
     if let Some(place) = where_it_is(subject) {
-        row("Where", place);
+        row(t("info.where"), place);
     }
 
     let size = match subject.items.as_slice() {
         [item] if !item.is_folder => {
             if item.size_bytes == UNKNOWN_SIZE {
-                "4 GB or more (the phone does not say)".to_owned()
+                t("info.size_unknown").to_owned()
             } else {
                 exact_bytes(item.size_bytes)
             }
         }
-        _ if error.is_some() => "Could not be counted".to_owned(),
-        _ if counting => format!(
-            "Counting… {}, {} so far",
-            plural(tally.files, "file"),
-            format_bytes(tally.bytes)
+        _ if error.is_some() => t("info.size_error").to_owned(),
+        _ if counting => tf(
+            "info.size_counting",
+            &[
+                ("files", &count("text.files", tally.files, &[])),
+                ("bytes", &format_bytes(tally.bytes)),
+            ],
         ),
         _ => exact_bytes(tally.bytes),
     };
-    row("Size", size);
+    row(t("label.column.size"), size);
     if counts_folders && error.is_none() {
         row(
-            "Items",
-            format!(
-                "{}, {}",
-                plural(tally.files, "file"),
-                plural(tally.folders, "folder")
-            ),
+            t("info.items"),
+            files_and_folders(tally.files, tally.folders),
         );
     }
     if let [item] = subject.items.as_slice()
         && let Some(modified) = &item.modified
     {
-        row("Modified", format_timestamp(modified, today));
+        row(
+            t("label.column.modified"),
+            format_timestamp(modified, today),
+        );
     }
     // A folder on the phone (nothing selected): what the phone can do there.
     if subject.items.is_empty()
@@ -119,10 +119,10 @@ pub fn to_info_response(
     {
         let (can, cannot) = abilities_in_words(abilities);
         if !can.is_empty() {
-            row("Phone can", can.join(", "));
+            row(t("info.phone_can"), words_list(&can));
         }
         if !cannot.is_empty() {
-            row("Can't", cannot.join(", "));
+            row(t("info.cant"), words_list(&cannot));
         }
     }
 
@@ -131,26 +131,16 @@ pub fn to_info_response(
         notes.push(format!("{} {}", error.title, error.hint).trim().to_owned());
     }
     if counts_folders && error.is_none() {
-        notes.push("Hidden items are counted too.".to_owned());
+        notes.push(t("info.note_hidden").to_owned());
     }
-    match tally.unknown_sizes {
-        0 => {}
-        1 => notes.push("1 file is 4 GB or more: the phone does not say how big, so it is not in the size.".to_owned()),
-        n => notes.push(format!(
-            "{} files are 4 GB or more: the phone does not say how big, so they are not in the size.",
-            format_count(n)
-        )),
+    if tally.unknown_sizes > 0 {
+        notes.push(count("info.note_unknown", tally.unknown_sizes, &[]));
     }
-    match tally.unreadable {
-        0 => {}
-        1 => notes.push("1 folder could not be read (macOS keeps it private): what is in it is not counted.".to_owned()),
-        n => notes.push(format!(
-            "{} folders could not be read (macOS keeps them private): what is in them is not counted.",
-            format_count(n)
-        )),
+    if tally.unreadable > 0 {
+        notes.push(count("info.note_unreadable", tally.unreadable, &[]));
     }
     if tally.incomplete {
-        notes.push("The count stopped at the most it looks at: there is more.".to_owned());
+        notes.push(t("info.note_stopped").to_owned());
     }
 
     InfoResponse {
@@ -177,10 +167,12 @@ pub fn kind_shares(tally: &dto::Tally) -> Vec<super::response::KindShare> {
         .into_iter()
         .map(|(kind, bytes)| super::response::KindShare {
             kind,
-            label: format!(
-                "{} {}",
-                kind_word(kind),
-                crate::handler::format::format_bytes(bytes)
+            label: tf(
+                "info.kind_share",
+                &[
+                    ("kind", kind_word(kind)),
+                    ("size", &crate::handler::format::format_bytes(bytes)),
+                ],
             ),
             portion: u16::try_from((u128::from(bytes) * 1000 / u128::from(tally.bytes)).max(1))
                 .unwrap_or(1000),
@@ -191,13 +183,13 @@ pub fn kind_shares(tally: &dto::Tally) -> Vec<super::response::KindShare> {
 
 fn kind_word(kind: dto::SpaceKind) -> &'static str {
     match kind {
-        dto::SpaceKind::Photos => "Photos",
-        dto::SpaceKind::Videos => "Videos",
-        dto::SpaceKind::Music => "Music",
-        dto::SpaceKind::Documents => "Documents",
-        dto::SpaceKind::Archives => "Archives",
-        dto::SpaceKind::Apps => "Apps",
-        dto::SpaceKind::Other => "Other",
+        dto::SpaceKind::Photos => t("label.kind.photos"),
+        dto::SpaceKind::Videos => t("label.kind.videos"),
+        dto::SpaceKind::Music => t("label.kind.music"),
+        dto::SpaceKind::Documents => t("label.kind.documents"),
+        dto::SpaceKind::Archives => t("label.kind.archives"),
+        dto::SpaceKind::Apps => t("info.kind_apps"),
+        dto::SpaceKind::Other => t("info.kind_other"),
     }
 }
 
@@ -206,7 +198,7 @@ fn own_name(subject: &Subject) -> String {
     if subject.folder.trim_end_matches('/').is_empty() {
         return match &subject.place {
             Place::Phone { storage, .. } => storage.clone(),
-            Place::Mac => "Macintosh HD".to_owned(),
+            Place::Mac => english_only("Macintosh HD").to_owned(),
         };
     }
     explorer::folder_name(&subject.folder)
@@ -231,9 +223,12 @@ fn where_it_is(subject: &Subject) -> Option<String> {
         Place::Phone { storage, .. } => {
             let path = folder.trim_matches('/');
             if path.is_empty() {
-                format!("{storage} on the phone")
+                tf("info.where_phone_top", &[("storage", storage)])
             } else {
-                format!("{storage} › {} on the phone", path.replace('/', " › "))
+                tf(
+                    "info.where_phone",
+                    &[("storage", storage), ("path", &path.replace('/', " › "))],
+                )
             }
         }
         Place::Mac => folder,
@@ -242,22 +237,34 @@ fn where_it_is(subject: &Subject) -> Option<String> {
 
 fn exact_bytes(bytes: u64) -> String {
     match bytes {
-        0 => "Zero bytes".to_owned(),
-        1 => "1 byte".to_owned(),
-        _ if bytes < 1_000 => format!("{bytes} bytes"),
-        _ => format!(
-            "{} ({} bytes)",
-            format_bytes(bytes),
-            format_count(usize::try_from(bytes).unwrap_or(usize::MAX))
+        0 => t("info.bytes_zero").to_owned(),
+        _ if bytes < 1_000 => count("info.bytes", bytes as usize, &[]),
+        _ => tf(
+            "info.bytes_exact",
+            &[
+                ("size", &format_bytes(bytes)),
+                (
+                    "bytes",
+                    &format_count(usize::try_from(bytes).unwrap_or(usize::MAX)),
+                ),
+            ],
         ),
     }
 }
 
-fn plural(count: usize, noun: &str) -> String {
-    match count {
-        1 => format!("1 {noun}"),
-        n => format!("{} {noun}s", format_count(n)),
-    }
+fn files_and_folders(files: usize, folders: usize) -> String {
+    tf(
+        "text.list_next",
+        &[
+            ("so_far", &count("text.files", files, &[])),
+            ("next", &count("text.folders", folders, &[])),
+        ],
+    )
+}
+
+fn words_list(words: &[&str]) -> String {
+    let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+    comma_list(&words)
 }
 
 #[cfg(test)]
@@ -506,6 +513,7 @@ mod tests {
                 device_lost: true,
                 privacy: None,
                 cancelled: false,
+                source: dto::Error::Disconnected,
             }),
             today(),
         );

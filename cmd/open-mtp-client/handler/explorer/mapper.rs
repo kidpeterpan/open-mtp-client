@@ -6,6 +6,7 @@ use super::response::{
 };
 use crate::handler::error;
 use crate::handler::format::{format_bytes, format_count, format_timestamp};
+use crate::i18n::{count, key, t, tf};
 
 pub const MISSING: &str = "—";
 
@@ -15,35 +16,44 @@ pub fn to_picture(thumbnail: dto::Thumbnail) -> iced::widget::image::Handle {
 }
 
 /// What Finder calls a new folder.
-pub const NEW_FOLDER_NAME: &str = "untitled folder";
+pub fn new_folder_name() -> &'static str {
+    t("explorer.new_folder_name")
+}
 
 /// Under a phone delete's question: whether a copy goes to the Trash first.
 pub fn delete_note(keep: super::handler::Keep) -> String {
     use super::handler::Keep;
-    let gone = "It is deleted from your phone for good. It can't be undone.";
+    let then_gone = |first: String| {
+        tf(
+            "text.sentences",
+            &[("first", &first), ("second", t("explorer.delete.gone"))],
+        )
+    };
     match keep {
-        Keep::No => "This deletes it from your phone for good. It can't be undone.".to_owned(),
-        Keep::Counting => "Counting what will be copied to the Trash first…".to_owned(),
-        Keep::Copy(bytes) => format!(
-            "A copy ({}) goes to the Mac's Trash first, then it is deleted from the phone. Anything that can't be copied whole stays on the phone.",
-            crate::handler::format::format_bytes(bytes)
-        ),
-        Keep::TooMuch(bytes) => format!(
-            "This is {}, over the {} a delete copies to the Trash first. {gone}",
-            crate::handler::format::format_bytes(bytes),
-            crate::handler::format::format_bytes(dto::KEEP_MOST)
-        ),
-        Keep::Unknown => format!("The phone doesn't give every size, so no copy is kept. {gone}"),
+        Keep::No => t("explorer.delete.no_copy").to_owned(),
+        Keep::Counting => t("explorer.delete.counting").to_owned(),
+        Keep::Copy(bytes) => tf("explorer.delete.copy", &[("size", &format_bytes(bytes))]),
+        Keep::TooMuch(bytes) => then_gone(tf(
+            "explorer.delete.too_much",
+            &[
+                ("size", &format_bytes(bytes)),
+                ("most", &format_bytes(dto::KEEP_MOST)),
+            ],
+        )),
+        Keep::Unknown => then_gone(t("explorer.delete.unknown").to_owned()),
     }
 }
 
 /// Said in an Android phone's `Android/data` or `Android/obb` when it looks
 /// empty or can't be read: Android keeps them from computers.
-pub const APP_FOLDERS_NOTE: &str =
-    "Android keeps apps' own folders from computers: what is here can be seen only on the phone.";
+pub fn app_folders_note() -> &'static str {
+    t("explorer.app_folders.note")
+}
 
 /// The title of a refused read in one of those folders.
-pub const APP_FOLDERS_REFUSED: &str = "Android doesn't let computers in here";
+pub fn app_folders_refused() -> &'static str {
+    t("explorer.app_folders.refused")
+}
 
 /// `path` is `Android/data` or `Android/obb` on a phone, or inside one,
 /// whatever its case: the folders Android keeps from computers (Android 11
@@ -64,13 +74,13 @@ pub fn has_control(path: &str) -> bool {
 /// Why a path wasn't copied: the path, with those characters shown escaped.
 pub fn odd_name_hint(path: &str) -> String {
     let shown = crate::handler::format::escape_odd(path);
-    format!(
-        "“{shown}” has a line break or another control character in a name, which would change what is pasted. Rename it first."
-    )
+    tf("explorer.odd_name", &[("shown", &shown)])
 }
 
 /// A folder's Size cell while it is being counted.
-pub const COUNTING: &str = "Counting…";
+pub fn counting() -> &'static str {
+    t("explorer.counting")
+}
 
 /// A folder's Size cell once counted: what its files hold, with a "+" when
 /// some of it could not be counted (sizes the phone doesn't give, folders
@@ -87,13 +97,15 @@ pub fn folder_size(tally: &dto::Tally) -> String {
 /// What the banner says once paths are on the clipboard.
 pub fn copied_paths(names: &[String]) -> String {
     match names {
-        [one] => format!("Copied the path of “{one}”"),
-        many => format!("Copied {} paths", format_count(many.len())),
+        [one] => tf("explorer.copied_path", &[("name", one)]),
+        many => count("explorer.copied_paths", many.len(), &[]),
     }
 }
 
 /// What a folder made around the selection is called first, as in Finder.
-pub const FOLDER_WITH_ITEMS: &str = "New Folder With Items";
+pub fn folder_with_items() -> &'static str {
+    t("explorer.folder_with_items")
+}
 
 /// `base`, or `base (n)` for the first n that no name in `taken` has,
 /// ignoring case as phones and the Mac do.
@@ -119,14 +131,11 @@ pub fn stem_len(name: &str) -> usize {
 
 /// "Delete “IMG_001.jpg”?" or "Delete 3 items?"; "Move … to the Trash?" on the Mac.
 pub fn delete_title(names: &[String], permanently: bool) -> String {
-    let what = match names {
-        [one] => format!("“{one}”"),
-        many => format!("{} items", many.len()),
-    };
-    if permanently {
-        format!("Delete {what}?")
-    } else {
-        format!("Move {what} to the Trash?")
+    match (names, permanently) {
+        ([one], true) => tf("explorer.delete.title_name", &[("name", one)]),
+        ([one], false) => tf("explorer.trash.title_name", &[("name", one)]),
+        (many, true) => count("explorer.delete.title_items", many.len(), &[]),
+        (many, false) => count("explorer.trash.title_items", many.len(), &[]),
     }
 }
 
@@ -135,14 +144,20 @@ pub fn delete_title(names: &[String], permanently: bool) -> String {
 pub fn drag_hint(count: usize, target: Option<&str>, copy: bool, other_pane: bool) -> String {
     let what = items(count);
     let place = if other_pane {
-        "a folder or the other pane"
+        t("explorer.drag.place_both")
     } else {
-        "a folder"
+        t("explorer.drag.place_folder")
     };
     match (target, copy) {
-        (Some(folder), true) => format!("Copy {what} into “{folder}”"),
-        (Some(folder), false) => format!("Move {what} into “{folder}” · hold ⌥ to copy"),
-        (None, _) => format!("Dragging {what}: drop on {place} · ⌥ copies · Esc cancels"),
+        (Some(folder), true) => tf(
+            "explorer.drag.copy_into",
+            &[("what", &what), ("folder", folder)],
+        ),
+        (Some(folder), false) => tf(
+            "explorer.drag.move_into",
+            &[("what", &what), ("folder", folder)],
+        ),
+        (None, _) => tf("explorer.drag.hint", &[("what", &what), ("place", place)]),
     }
 }
 
@@ -151,14 +166,17 @@ pub fn drag_hint(count: usize, target: Option<&str>, copy: bool, other_pane: boo
 /// between disks).
 pub fn incoming_hint(count: usize, folder: Option<&str>, moving: bool) -> String {
     let what = items(count);
-    let place = match folder {
-        Some(folder) => format!("into “{folder}”"),
-        None => "here".to_owned(),
-    };
-    if moving {
-        format!("Move {what} {place}")
-    } else {
-        format!("Copy {what} {place} · hold ⌘ to move")
+    match (folder, moving) {
+        (Some(folder), true) => tf(
+            "explorer.incoming.move_into",
+            &[("what", &what), ("folder", folder)],
+        ),
+        (None, true) => tf("explorer.incoming.move_here", &[("what", &what)]),
+        (Some(folder), false) => tf(
+            "explorer.incoming.copy_into",
+            &[("what", &what), ("folder", folder)],
+        ),
+        (None, false) => tf("explorer.incoming.copy_here", &[("what", &what)]),
     }
 }
 
@@ -166,7 +184,7 @@ pub fn incoming_hint(count: usize, folder: Option<&str>, moving: bool) -> String
 pub fn folder_name(path: &str) -> String {
     match path.trim_end_matches('/').rsplit('/').next() {
         Some(name) if !name.is_empty() => name.to_owned(),
-        _ => "the top folder".to_owned(),
+        _ => t("explorer.top_folder").to_owned(),
     }
 }
 
@@ -180,18 +198,22 @@ pub fn against_notice(
 ) -> NoticeResponse {
     use super::compare::Against;
     let title = match (want, picked) {
-        (Against::Missing, 0) => format!("Everything here is in “{other}” already"),
-        (Against::Same, 0) => format!("Nothing here is in “{other}” as it is here"),
-        (Against::Missing, n) => format!(
-            "Selected {} of {}: not in “{other}”",
-            format_count(n),
-            format_count(shown)
-        ),
-        (Against::Same, n) => format!(
-            "Selected {} of {}: also in “{other}”",
-            format_count(n),
-            format_count(shown)
-        ),
+        (Against::Missing, 0) => tf("explorer.against.missing_none", &[("other", other)]),
+        (Against::Same, 0) => tf("explorer.against.same_none", &[("other", other)]),
+        (want, n) => {
+            let message = match want {
+                Against::Missing => key("explorer.against.missing"),
+                Against::Same => key("explorer.against.same"),
+            };
+            tf(
+                message,
+                &[
+                    ("picked", &format_count(n)),
+                    ("shown", &format_count(shown)),
+                    ("other", other),
+                ],
+            )
+        }
     };
     NoticeResponse {
         title,
@@ -203,57 +225,79 @@ pub fn against_notice(
 /// The most failures a notice lists by name; the rest are counted.
 const FAILURES_LISTED: usize = 3;
 
-fn items(count: usize) -> String {
-    match count {
-        1 => "1 item".to_owned(),
-        n => format!("{} items", format_count(n)),
-    }
+fn items(number: usize) -> String {
+    count("text.items", number, &[])
 }
 
 /// What a finished paste tells the user, and which names to select.
 pub fn to_paste_response(summary: &dto::PasteSummary) -> PasteResponse {
-    let (past, verb) = match summary.mode {
-        dto::Paste::Copy => ("Copied", "copy"),
-        dto::Paste::Move => ("Moved", "move"),
-    };
+    let copying = summary.mode == dto::Paste::Copy;
     let failed = summary.failures.len();
     let mut details = Vec::new();
 
+    let by_mode = |copy_key, move_key| if copying { copy_key } else { move_key };
     let title = match (summary.done, failed) {
-        (0, 0) => match summary.mode {
-            dto::Paste::Copy => "Nothing to copy".to_owned(),
-            dto::Paste::Move => "Already in this folder".to_owned(),
-        },
-        (1, 0) if summary.renamed == 1 => {
-            // Say what it is called now: it is not what was copied.
-            format!("{past} as “{}”", summary.names[0])
-        }
-        (1, 0) => format!("{past} “{}”", summary.names[0]),
-        (done, 0) => format!("{past} {}", items(done)),
-        (0, 1) => format!("Couldn’t {verb} “{}”", summary.failures[0].label),
-        (0, many) => format!("Couldn’t {verb} {}", items(many)),
-        (done, failed) => format!("{past} {done} of {}", items(done + failed)),
+        (0, 0) if copying => t("explorer.paste.nothing").to_owned(),
+        (0, 0) => t("explorer.paste.already_here").to_owned(),
+        (1, 0) if summary.renamed == 1 => tf(
+            by_mode(
+                key("explorer.paste.copied_as"),
+                key("explorer.paste.moved_as"),
+            ),
+            &[("name", &summary.names[0])],
+        ),
+        (1, 0) => tf(
+            by_mode(
+                key("explorer.paste.copied_one"),
+                key("explorer.paste.moved_one"),
+            ),
+            &[("name", &summary.names[0])],
+        ),
+        (done, 0) => tf(
+            by_mode(
+                key("explorer.paste.copied_items"),
+                key("explorer.paste.moved_items"),
+            ),
+            &[("items", &items(done))],
+        ),
+        (0, 1) => tf(
+            by_mode(
+                key("explorer.paste.copy_failed_one"),
+                key("explorer.paste.move_failed_one"),
+            ),
+            &[("name", &summary.failures[0].label)],
+        ),
+        (0, many) => tf(
+            by_mode(
+                key("explorer.paste.copy_failed_items"),
+                key("explorer.paste.move_failed_items"),
+            ),
+            &[("items", &items(many))],
+        ),
+        (done, failed) => tf(
+            by_mode(
+                key("explorer.paste.copied_some"),
+                key("explorer.paste.moved_some"),
+            ),
+            &[
+                ("done", &done.to_string()),
+                ("items", &items(done + failed)),
+            ],
+        ),
     };
 
-    // A lone renamed item is already named in the title.
     if summary.renamed > 0 && !(summary.done == 1 && failed == 0) {
-        details.push(match summary.renamed {
-            1 => "1 item was renamed because its name was taken.".to_owned(),
-            n => format!(
-                "{} items were renamed because their names were taken.",
-                format_count(n)
-            ),
-        });
+        details.push(count("explorer.paste.renamed", summary.renamed, &[]));
     }
     for failure in summary.failures.iter().take(FAILURES_LISTED) {
         let reason = error::to_error_response(failure.error.clone()).title;
-        details.push(format!("“{}”: {reason}", failure.label));
+        details.push(tf(
+            "explorer.paste.failure_line",
+            &[("name", &failure.label), ("reason", &reason)],
+        ));
     }
     if failed > FAILURES_LISTED {
-        details.push(format!(
-            "and {} more",
-            format_count(failed - FAILURES_LISTED)
-        ));
+        details.push(count("explorer.paste.more", failed - FAILURES_LISTED, &[]));
     }
 
     PasteResponse {
@@ -336,13 +380,14 @@ pub fn badge(entry: &dto::Entry) -> Option<Badge> {
 /// Finder-style kind column: "Folder", "JPG file", or "File".
 pub fn kind(entry: &dto::Entry) -> String {
     if entry.is_folder {
-        return "Folder".to_owned();
+        return t("explorer.kind.folder").to_owned();
     }
     match entry.name.rsplit_once('.') {
-        Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
-            format!("{} file", extension.to_uppercase())
-        }
-        _ => "File".to_owned(),
+        Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => tf(
+            "explorer.kind.extension",
+            &[("extension", &extension.to_uppercase())],
+        ),
+        _ => t("explorer.kind.file").to_owned(),
     }
 }
 
@@ -376,10 +421,19 @@ pub fn header_label(title: &str, key: dto::SortKey, sort: dto::Sort) -> String {
 /// something is selected.
 /// The footer while a filter hides part of the folder.
 pub fn filtered_status(shown: usize, total: usize, selected: usize) -> String {
-    let shown_of = format!("{} of {} shown", format_count(shown), format_count(total));
+    let shown_of = tf(
+        "explorer.status.filtered",
+        &[
+            ("shown", &format_count(shown)),
+            ("total", &format_count(total)),
+        ],
+    );
     match selected {
         0 => shown_of,
-        n => format!("{} selected · {shown_of}", format_count(n)),
+        n => tf(
+            "explorer.status.filtered_selected",
+            &[("selected", &format_count(n)), ("shown_of", &shown_of)],
+        ),
     }
 }
 
@@ -387,18 +441,26 @@ pub fn filtered_status(shown: usize, total: usize, selected: usize) -> String {
 /// A folder's size would mean reading all of it, so folders are only counted
 /// and ⌘I offers to measure them.
 pub fn selected_status(selected: usize, total: usize, file_bytes: u64, folders: usize) -> String {
-    let some = format!(
-        "{} of {} selected",
-        format_count(selected),
-        format_count(total)
+    let some = tf(
+        "explorer.status.selected",
+        &[
+            ("selected", &format_count(selected)),
+            ("total", &format_count(total)),
+        ],
     );
     match folders {
-        0 => format!("{some} · {}", format_bytes(file_bytes)),
-        n if n == selected => format!("{some} · ⌘I to count what is in them"),
-        n => format!(
-            "{some} · {} + {} · ⌘I to count",
-            format_bytes(file_bytes),
-            plural(n, "folder")
+        0 => tf(
+            "explorer.status.selected_files",
+            &[("some", &some), ("size", &format_bytes(file_bytes))],
+        ),
+        n if n == selected => tf("explorer.status.selected_folders", &[("some", &some)]),
+        n => tf(
+            "explorer.status.selected_both",
+            &[
+                ("some", &some),
+                ("size", &format_bytes(file_bytes)),
+                ("folders", &count("text.folders", n, &[])),
+            ],
         ),
     }
 }
@@ -410,25 +472,24 @@ pub fn status(entries: &[dto::Entry]) -> String {
     let files = total - folders;
     let bytes: u64 = entries.iter().map(|entry| entry.size_bytes).sum();
 
+    let folders_text = count("text.folders", folders, &[]);
+    let files_text = count("text.files", files, &[]);
     match (folders, files) {
-        (0, 0) => "No items".to_owned(),
-        (_, 0) => plural(folders, "folder"),
-        (0, _) => format!("{} · {}", plural(files, "file"), format_bytes(bytes)),
-        _ => format!(
-            "{} · {}, {} · {}",
-            plural(total, "item"),
-            plural(folders, "folder"),
-            plural(files, "file"),
-            format_bytes(bytes)
+        (0, 0) => t("explorer.status.none").to_owned(),
+        (_, 0) => folders_text,
+        (0, _) => tf(
+            "explorer.status.files_size",
+            &[("files", &files_text), ("size", &format_bytes(bytes))],
         ),
-    }
-}
-
-fn plural(count: usize, noun: &str) -> String {
-    if count == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{count} {noun}s")
+        _ => tf(
+            "explorer.status.all",
+            &[
+                ("items", &items(total)),
+                ("folders", &folders_text),
+                ("files", &files_text),
+                ("size", &format_bytes(bytes)),
+            ],
+        ),
     }
 }
 
@@ -459,7 +520,7 @@ pub fn breadcrumbs(volume_name: &str, home: Option<&str>, path: &str) -> Vec<Cru
                 .is_some_and(|rest| rest.starts_with('/'))
     });
     let (first, start, rest) = match inside_home {
-        Some(home) => ("Home", home, &path[home.len()..]),
+        Some(home) => (t("label.home"), home, &path[home.len()..]),
         None => (volume_name, "/", path),
     };
 

@@ -1,5 +1,7 @@
 //! Display-ready view models: every string here is shown as-is.
 
+use crate::i18n::t;
+
 #[derive(Debug, Clone)]
 pub struct EntryResponse {
     pub name: String,
@@ -36,13 +38,13 @@ impl BadgeKind {
     /// The word under a tile's badge.
     pub fn word(self) -> &'static str {
         match self {
-            BadgeKind::Photo => "Photo",
-            BadgeKind::Video => "Video",
-            BadgeKind::Music => "Music",
-            BadgeKind::Document => "Document",
-            BadgeKind::Archive => "Archive",
-            BadgeKind::App => "Android app",
-            BadgeKind::Other => "File",
+            BadgeKind::Photo => t("explorer.badge.photo"),
+            BadgeKind::Video => t("explorer.badge.video"),
+            BadgeKind::Music => t("explorer.badge.music"),
+            BadgeKind::Document => t("explorer.badge.document"),
+            BadgeKind::Archive => t("explorer.badge.archive"),
+            BadgeKind::App => t("explorer.badge.app"),
+            BadgeKind::Other => t("explorer.badge.file"),
         }
     }
 }
