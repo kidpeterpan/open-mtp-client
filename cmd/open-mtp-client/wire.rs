@@ -3036,4 +3036,82 @@ mod tests {
             "nested code is signed before the bundle"
         );
     }
+
+    /// Runs `make prune` in a folder holding the real Makefile and a fake
+    /// `cargo` that only writes down what it was asked, so nothing is built.
+    fn prune(folder: &std::path::Path, max_gb: u32) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = folder.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let cargo = bin.join("cargo");
+        std::fs::write(
+            &cargo,
+            format!("#!/bin/sh\necho \"$*\" >> {}/calls\n", folder.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(folder.join("Makefile"), include_str!("../../Makefile")).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        let made = std::process::Command::new("make")
+            .args(["-C"])
+            .arg(folder)
+            .args(["prune", &format!("TARGET_MAX_GB={max_gb}")])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "make prune: {made:?}");
+        std::fs::read_to_string(folder.join("calls")).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_target_folder_past_its_size_loses_the_debug_and_coverage_builds_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        for (folder, file) in [("llvm-cov-target", "a"), ("release", "b")] {
+            std::fs::create_dir_all(target.join(folder)).unwrap();
+            std::fs::write(target.join(folder).join(file), vec![0u8; 4096]).unwrap();
+        }
+
+        assert_eq!(
+            prune(dir.path(), 1),
+            "",
+            "under the limit nothing is touched"
+        );
+        assert!(target.join("llvm-cov-target").exists());
+
+        assert_eq!(
+            prune(dir.path(), 0),
+            "clean --profile dev\n",
+            "over it only the debug profile is cleaned"
+        );
+        assert!(!target.join("llvm-cov-target").exists(), "coverage build");
+        assert!(target.join("release/b").exists(), "release builds stay");
+    }
+
+    #[test]
+    fn pruning_a_checkout_that_was_never_built_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(prune(dir.path(), 0), "");
+    }
+
+    #[test]
+    fn every_target_that_compiles_debug_code_prunes_first() {
+        let makefile = include_str!("../../Makefile");
+        for target in [
+            "run",
+            "run-virtual",
+            "run-virtual-two",
+            "build",
+            "test",
+            "lint",
+            "coverage",
+        ] {
+            assert!(
+                makefile
+                    .lines()
+                    .any(|line| line == format!("{target}: prune")),
+                "make {target} prunes target/ first"
+            );
+        }
+    }
 }
