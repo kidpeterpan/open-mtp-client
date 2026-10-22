@@ -40,6 +40,13 @@ objc2-foundation = { version = "0.2", features = ["NSBundle", "NSData", "NSDate"
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSBitmapImageRep", "NSBox", "NSCell", "NSColor", "NSControl", "NSDockTile", "NSImage", "NSImageRep", "NSEvent", "NSGraphicsContext", "NSImageView", "NSMenu", "NSMenuItem", "NSProgressIndicator", "NSResponder", "NSRunningApplication", "NSSharingService", "NSView", "NSWindow"] }
 objc2-user-notifications = { version = "0.2", features = ["block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
+# macOS keeps every codegen unit's object file beside a debug binary
+# ("unpacked"), and cargo never removes the ones a changed build leaves behind:
+# a few days of test runs left 900,000 of them, 200 GB. "off" keeps the debug
+# info in the binary, so backtraces still have their lines.
+[profile.dev]
+split-debuginfo = "off"
+
 # mtp-rs 0.33 has no way to read a device property (battery level) from an
 # open device; vendor/mtp-rs is 0.33.0 with that added (vendor/README.md).
 [patch.crates-io]
