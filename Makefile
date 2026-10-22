@@ -1,28 +1,43 @@
 VIRTUAL_PHONE ?= $(CURDIR)/.virtual-phone
 
-.PHONY: run run-virtual run-virtual-two build release universal app dmg icon test test-intel test-large test-vendor cli lint fmt coverage
+.PHONY: run run-virtual run-virtual-two build release universal app dmg icon test test-intel test-large test-vendor cli lint fmt coverage prune
 
 # Line coverage the workspace must keep.
 COVERAGE_MIN ?= 75
+
+# cargo never prunes `target/`: incremental caches, test binaries of older code
+# and the coverage build pile up (one checkout reached 201 GB). Past
+# TARGET_MAX_GB the debug and coverage builds are removed before the next
+# compile, which costs one full debug build (about 30 s); release and universal
+# builds stay. `make test TARGET_MAX_GB=1000` turns it off.
+TARGET_MAX_GB ?= 12
+
+prune:
+	@kb=$$(du -sk target 2>/dev/null | cut -f1); \
+	if [ "$${kb:-0}" -gt $$(( $(TARGET_MAX_GB) * 1024 * 1024 )) ]; then \
+		echo "target/ holds $$(( kb / 1024 / 1024 )) GB, over $(TARGET_MAX_GB) GB: removing the debug and coverage builds"; \
+		cargo clean --profile dev; \
+		rm -rf target/llvm-cov-target; \
+	fi
 
 # `make run` builds optimized: the window redraws a lot, and a debug build of
 # it is many times slower (felt most in a folder with thousands of photos).
 # `make run PROFILE=` builds a debug binary, which compiles faster.
 PROFILE ?= --release
 
-run:
+run: prune
 	cargo run $(PROFILE) -p open-mtp-client
 
-run-virtual:
+run-virtual: prune
 	mkdir -p $(VIRTUAL_PHONE)/DCIM/Camera $(VIRTUAL_PHONE)/Download $(VIRTUAL_PHONE)/Music
 	OPEN_MTP_CLIENT_VIRTUAL_DIR=$(VIRTUAL_PHONE) cargo run $(PROFILE) -p open-mtp-client
 
 # Two fake phones plugged in at once, to try switching between them.
-run-virtual-two:
+run-virtual-two: prune
 	mkdir -p $(VIRTUAL_PHONE)/DCIM/Camera $(VIRTUAL_PHONE)-2/DCIM/Camera $(VIRTUAL_PHONE)-2/Music
 	OPEN_MTP_CLIENT_VIRTUAL_DIR=$(VIRTUAL_PHONE):$(VIRTUAL_PHONE)-2 cargo run $(PROFILE) -p open-mtp-client
 
-build:
+build: prune
 	cargo build --workspace
 
 release:
@@ -95,7 +110,7 @@ dmg: app
 	hdiutil verify $(DMG)
 	@echo "Built $(DMG)"
 
-test:
+test: prune
 	cargo test --workspace
 
 # The whole suite as Intel code: on Apple Silicon it runs under Rosetta, so
@@ -120,12 +135,12 @@ test-vendor:
 cli:
 	cargo build --release -p open-mtp-client-cli
 
-lint:
+lint: prune
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 
 fmt:
 	cargo fmt --all
 
-coverage:
+coverage: prune
 	cargo llvm-cov --workspace --summary-only --fail-under-lines $(COVERAGE_MIN)
