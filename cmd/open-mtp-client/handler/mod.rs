@@ -8,6 +8,7 @@ pub mod drop_spot;
 pub mod error;
 pub mod explorer;
 pub mod format;
+pub mod guard;
 pub mod help;
 pub mod import;
 pub mod info;

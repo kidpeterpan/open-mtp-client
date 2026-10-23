@@ -11,6 +11,7 @@ use super::whats_new;
 use crate::handler::diagnosis::{self, DiagnosisResponse};
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::format;
+use crate::handler::guard;
 use crate::i18n::{english_only, key, t, tf};
 use crate::keymap;
 
@@ -289,15 +290,15 @@ impl Handler {
                 }
                 self.timing = Timing::Running;
                 let (service, generation) = (Arc::clone(&self.service), self.generation);
-                Task::perform(
+                guard::perform(
                     async move {
-                        let result = service
+                        service
                             .time_reading(storage_id, &path)
                             .await
-                            .map_err(error::to_error_response);
-                        Message::Timed { generation, result }
+                            .map_err(error::to_error_response)
                     },
-                    |message| message,
+                    || Err(guard::crashed()),
+                    move |result| Message::Timed { generation, result },
                 )
             }
             Request::QuitHolders => {
@@ -311,11 +312,13 @@ impl Handler {
                 self.check = Check::Running;
                 let (service, generation) = (Arc::clone(&self.service), self.generation);
                 let phone = self.phone.clone();
-                Task::perform(
+                guard::perform(
                     async move {
-                        service.release(&holders).await;
+                        // Whatever happens to the quitting, it is checked again.
+                        let _ = guard::caught(service.release(&holders)).await;
                         check_now(service, generation, phone).await
                     },
+                    move || check_crashed(generation),
                     |message| message,
                 )
             }
@@ -344,7 +347,11 @@ impl Handler {
         self.check = Check::Running;
         let (service, generation) = (Arc::clone(&self.service), self.generation);
         let phone = self.phone.clone();
-        Task::perform(check_now(service, generation, phone), |message| message)
+        guard::perform(
+            check_now(service, generation, phone),
+            move || check_crashed(generation),
+            |message| message,
+        )
     }
 
     fn start_report(&mut self) -> Task<Message> {
@@ -362,8 +369,9 @@ impl Handler {
         // Taken now, on this thread: the history of what was shown up to the
         // moment the report was asked for.
         let problems = error::recent_problems();
-        Task::perform(
+        guard::perform(
             gather_report(service, generation, phone, problems),
+            move || report_crashed(generation),
             |message| message,
         )
     }
@@ -756,6 +764,25 @@ async fn check_now(service: Arc<dyn Service>, generation: u64, phone: Phone) -> 
     }
 }
 
+/// What a check that panicked says: nothing was found out, so the usual steps
+/// are shown, with "Check again", rather than "Checking…" for ever.
+fn check_crashed(generation: u64) -> Message {
+    Message::Checked {
+        generation,
+        diagnosis: dto::Diagnosis::default(),
+        holders: Vec::new(),
+    }
+}
+
+/// What a report that panicked says, in the place of the report.
+fn report_crashed(generation: u64) -> Message {
+    let crashed = guard::crashed();
+    Message::Report {
+        generation,
+        text: format!("{}\n{}", crashed.title, crashed.hint),
+    }
+}
+
 fn respond(diagnosis: &dto::Diagnosis, phone: &Phone) -> DiagnosisResponse {
     if phone.connected {
         return diagnosis::to_connected_response(diagnosis, &phone.summary);
@@ -950,6 +977,73 @@ mod tests {
         settle(&mut handler, Request::TimeReading).await;
         assert!(matches!(handler.timing, Timing::Done(Err(_))));
         let _ = handler.view();
+    }
+
+    // ---- service code that panics: the dialog is never left waiting ----
+
+    #[tokio::test]
+    async fn a_connection_check_that_panics_still_ends_with_the_checklist_and_check_again() {
+        let (mut handler, _) = handler_with(FakeHelp {
+            panics_in: Some("checkup"),
+            ..FakeHelp::default()
+        });
+        handler.open(Phone::new("x", false));
+
+        settle(&mut handler, Request::Show(Tab::Troubleshooting)).await;
+
+        assert!(
+            matches!(handler.check, Check::Done { .. }),
+            "not left on Checking…"
+        );
+        assert!(text_on_screen(&handler, "Check again"));
+    }
+
+    #[tokio::test]
+    async fn quitting_the_apps_when_that_panics_still_checks_again() {
+        let (mut handler, fake) = handler_with(FakeHelp {
+            panics_in: Some("release"),
+            ..photos_in_the_way()
+        });
+        handler.open(Phone::new("x", false));
+        settle(&mut handler, Request::Show(Tab::Troubleshooting)).await;
+
+        settle(&mut handler, Request::QuitHolders).await;
+
+        assert!(matches!(handler.check, Check::Done { .. }));
+        assert_eq!(fake.checks.load(Ordering::SeqCst), 2, "checked again");
+    }
+
+    #[tokio::test]
+    async fn a_report_that_panics_is_a_report_that_says_so_not_an_endless_gathering() {
+        let (mut handler, _) = handler_with(FakeHelp {
+            panics_in: Some("mac"),
+            ..FakeHelp::default()
+        });
+        handler.open(Phone::new("x", false));
+
+        settle(&mut handler, Request::Show(Tab::About)).await;
+
+        assert!(
+            matches!(&handler.report, Report::Ready(text) if text.contains("Something went wrong inside the app")),
+            "not left on Gathering…"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timed_reading_that_panics_ends_with_the_error() {
+        let (mut handler, _) = handler_with(FakeHelp {
+            panics_in: Some("time_reading"),
+            ..FakeHelp::default()
+        });
+        handler.open(connected_phone());
+        let _ = request(&mut handler, Request::Show(Tab::Troubleshooting));
+
+        settle(&mut handler, Request::TimeReading).await;
+
+        assert!(
+            matches!(&handler.timing, Timing::Done(Err(error)) if error.source == dto::Error::Crashed),
+            "not left on Reading…"
+        );
     }
 
     #[test]

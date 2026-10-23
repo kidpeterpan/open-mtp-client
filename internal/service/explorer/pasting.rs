@@ -504,8 +504,8 @@ async fn pasting_into_and_out_of_a_big_folder_does_not_read_it_again() {
     let listed = p.shows("/DCIM/Big").await;
     assert_eq!(listed.len(), 5_000);
     let reads = p.service.full_reads();
+    let heard = p.device.activity().times_heard();
 
-    let started = std::time::Instant::now();
     // Out of the big folder, into a small one, and a copy into itself.
     p.paste(Paste::Copy, "/DCIM/Big", &["IMG_00042.jpg"], "/Music")
         .await
@@ -517,7 +517,7 @@ async fn pasting_into_and_out_of_a_big_folder_does_not_read_it_again() {
     p.paste(Paste::Move, "/Music", &["IMG_00042.jpg"], "/Download")
         .await
         .unwrap();
-    let took = started.elapsed();
+    let asks = p.device.activity().times_heard() - heard;
 
     assert_eq!(summary.names, ["IMG_00042 (1).jpg"]);
     assert_eq!(
@@ -539,12 +539,12 @@ async fn pasting_into_and_out_of_a_big_folder_does_not_read_it_again() {
     assert_eq!(p.service.full_reads(), reads + 2);
     assert_eq!(p.read("DCIM/Big/IMG_00042.jpg"), b"x");
     assert_eq!(p.read("DCIM/Big/IMG_00042 (1).jpg"), b"x");
-    // The virtual phone answers "how many items are in this folder" by
-    // reading the directory (about 0.3 s per question at 5,000 files in a
-    // release build, 1 ms at 50; a real phone answers from its database), and
-    // a paste asks it a few times. The bound only catches a paste that starts
-    // costing a round trip per file, which would be minutes.
-    assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+    // The phone answered about thirty times: a few questions about the target
+    // and the two small folders, never one per file. A paste that costs a
+    // round trip per file would be 5,000 or more. (Counted, not timed: the
+    // virtual phone answers "how many items are in this folder" by reading the
+    // directory, so a stopwatch here only measured the machine.)
+    assert!(asks < 500, "{asks} answers from the phone for three pastes");
 }
 
 /// What the phone says it can do, less what a test takes away.

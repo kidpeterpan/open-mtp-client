@@ -29,6 +29,7 @@ use super::response::ResultRow;
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::explorer::selection::{Click, Selection};
 use crate::handler::explorer::window;
+use crate::handler::guard;
 use crate::i18n::{count, t};
 
 /// Rows have a fixed height, so only the ones near the screen are built.
@@ -250,13 +251,14 @@ impl Handler {
         self.error = None;
         self.progress = Progress::default();
         let walk = self.walk;
-        Task::run(
+        guard::run(
             walk_pieces(
                 Arc::clone(&self.service),
                 scope.storage_id,
                 scope.include_hidden,
                 cancel,
             ),
+            || Err(guard::crashed()),
             move |result| Message::Walked { walk, result },
         )
     }
@@ -770,6 +772,28 @@ mod tests {
             found("/DCIM/Camera", "Beach day.jpg", false),
             found("/Music", "beach.mp3", false),
         ]
+    }
+
+    #[tokio::test]
+    async fn a_walk_that_panics_ends_with_the_error_not_an_endless_search() {
+        for call in ["walk", "next"] {
+            let mut handler = Handler::new(Arc::new(FakeSearch {
+                panics_in: Some(call),
+                ..FakeSearch::default()
+            }));
+            let task = handler.open(1, "Internal", false);
+
+            for message in drain(task).await.0 {
+                let _ = handler.update(message);
+            }
+
+            assert!(handler.progress.done, "{call}: not left walking");
+            assert_eq!(
+                handler.error.as_ref().map(|error| error.source.clone()),
+                Some(dto::Error::Crashed),
+                "{call}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -15,6 +15,7 @@ use internal::dto;
 use super::mapper::{self, Line};
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::handler::guard;
 use crate::i18n::{t, tf};
 
 /// Told how a look, or a removal, is going.
@@ -191,7 +192,7 @@ impl Handler {
             dialog.cancel.clone(),
             dialog.storage_id,
         );
-        Task::run(
+        guard::run(
             iced::stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
                 let told = Mutex::new(output.clone());
                 // Best effort: a dropped report is replaced by the next.
@@ -206,6 +207,10 @@ impl Handler {
                     .map_err(error::to_error_response);
                 let _ = output.send(Message::Looked { look, result }).await;
             }),
+            move || Message::Looked {
+                look,
+                result: Err(guard::crashed()),
+            },
             |message| message,
         )
     }
@@ -242,7 +247,7 @@ impl Handler {
             paths,
         };
         let (service, cancel) = (Arc::clone(&self.service), dialog.cancel.clone());
-        Task::run(
+        guard::run(
             iced::stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
                 let told = Mutex::new(output.clone());
                 let removed: Told<usize> = Box::new(move |done| {
@@ -256,6 +261,12 @@ impl Handler {
                     .map_err(error::to_error_response);
                 let _ = output.send(Message::Removed { look, result }).await;
             }),
+            // Some files may be gone by then; the dialog says so and `app.rs`
+            // reads the phone again.
+            move || Message::Removed {
+                look,
+                result: Err(guard::crashed()),
+            },
             |message| message,
         )
     }
@@ -635,6 +646,48 @@ mod tests {
 
     fn ask(handler: &mut Handler, request: Request) -> Task<Message> {
         handler.update(Message::Request(request))
+    }
+
+    // ---- service code that panics: the dialog is never left waiting ----
+
+    fn says_crashed(handler: &Handler) -> bool {
+        matches!(
+            &handler.dialog.as_ref().unwrap().stage,
+            Stage::Failed(error) if error.source == dto::Error::Crashed
+        )
+    }
+
+    #[tokio::test]
+    async fn a_look_that_panics_ends_as_a_failure_not_an_endless_look() {
+        let (handler, _) = looked(FakeSpace {
+            panics_in: Some("look"),
+            ..FakeSpace::default()
+        })
+        .await;
+
+        assert!(!handler.is_busy(), "not left on Looking…");
+        assert!(says_crashed(&handler));
+    }
+
+    #[tokio::test]
+    async fn a_removal_that_panics_ends_as_a_failure_not_an_endless_removing() {
+        let (mut handler, _) = looked(FakeSpace {
+            report: Ok(report()),
+            panics_in: Some("free_up"),
+            ..FakeSpace::default()
+        })
+        .await;
+        let _ = ask(&mut handler, Request::SelectCopies);
+        let _ = ask(&mut handler, Request::Remove);
+
+        let task = ask(&mut handler, Request::ConfirmRemove);
+        assert!(handler.is_busy());
+        for message in drain(task).await.0 {
+            let _ = handler.update(message);
+        }
+
+        assert!(!handler.is_busy(), "not left on Removing…");
+        assert!(says_crashed(&handler));
     }
 
     #[tokio::test]

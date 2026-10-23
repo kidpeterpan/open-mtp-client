@@ -32,6 +32,7 @@ use super::undo::{self, Undo};
 use super::window;
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::format::format_count;
+use crate::handler::guard;
 use crate::i18n::{t, tf};
 
 /// How wide the filter's kind menu is: room for "Documents".
@@ -857,19 +858,23 @@ impl Handler {
         self.pasting = Some(mode);
 
         let paste = paste_items(Arc::clone(&self.service), requests);
-        Task::perform(paste, move |end| match end {
-            PasteEnd::Done(result) => Message::Pasted {
-                volume_id,
-                path,
-                result,
+        guard::perform(
+            paste,
+            || PasteEnd::Done(Err(guard::crashed())),
+            move |end| match end {
+                PasteEnd::Done(result) => Message::Pasted {
+                    volume_id,
+                    path,
+                    result,
+                },
+                PasteEnd::ViaMac => Message::PasteViaMac {
+                    mode,
+                    from: asked,
+                    volume_id,
+                    path,
+                },
             },
-            PasteEnd::ViaMac => Message::PasteViaMac {
-                mode,
-                from: asked,
-                volume_id,
-                path,
-            },
-        })
+        )
     }
 
     /// A paste is under way.
@@ -2516,15 +2521,16 @@ impl Handler {
                     location.path.clone(),
                 );
                 self.pasting = Some(dto::Paste::Move);
-                Task::perform(
+                let asked = path.clone();
+                guard::perform(
                     async move {
-                        let result = service
-                            .make_folder(volume_id, &path, &name)
+                        service
+                            .make_folder(volume_id, &asked, &name)
                             .await
-                            .map_err(error::to_error_response);
-                        (path, result)
+                            .map_err(error::to_error_response)
                     },
-                    move |(path, result)| Message::GroupMade {
+                    || Err(guard::crashed()),
+                    move |result| Message::GroupMade {
                         volume_id,
                         path,
                         names: names.clone(),
@@ -2757,11 +2763,12 @@ impl Handler {
             self.notice = Some(response.notice);
             let service = Arc::clone(&self.service);
             let (path, names) = (folder.clone(), vec![name]);
-            return Task::perform(
+            return guard::perform(
                 async move {
                     // Empty: nothing went in. Gone again, as if never made.
                     let _ = service.delete(volume_id, &path, &names).await;
                 },
+                || (),
                 |()| Message::Request(Request::Refresh),
             );
         }
@@ -2842,12 +2849,11 @@ impl Handler {
         go.offer(&editor.name);
         let service = Arc::clone(&self.service);
         let volume_id = location.volume.id;
-        Task::perform(
-            async move {
-                let names = service.folder_names(volume_id, &parent).await;
-                (parent, names)
-            },
-            |(parent, names)| Message::FolderNames { parent, names },
+        let asked = parent.clone();
+        guard::perform(
+            async move { service.folder_names(volume_id, &asked).await },
+            Vec::new,
+            move |names| Message::FolderNames { parent, names },
         )
     }
 
@@ -2968,26 +2974,30 @@ impl Handler {
         let made_folder = matches!(change, Action::MakeFolder(_));
         let apply = apply(Arc::clone(&self.service), volume_id, path.clone(), change);
 
-        Task::perform(apply, move |result| {
-            let undo = match (&result, renamed_from) {
-                (Ok(Some(name)), Some(from)) => Some(Undo::Renamed {
-                    folder: path.clone(),
-                    from,
-                    to: name.clone(),
-                }),
-                (Ok(Some(name)), None) if made_folder => Some(Undo::MadeFolder {
-                    folder: path.clone(),
-                    name: name.clone(),
-                }),
-                _ => None,
-            };
-            Message::Edited {
-                volume_id,
-                path,
-                result,
-                undo,
-            }
-        })
+        guard::perform(
+            apply,
+            || Err(guard::crashed()),
+            move |result| {
+                let undo = match (&result, renamed_from) {
+                    (Ok(Some(name)), Some(from)) => Some(Undo::Renamed {
+                        folder: path.clone(),
+                        from,
+                        to: name.clone(),
+                    }),
+                    (Ok(Some(name)), None) if made_folder => Some(Undo::MadeFolder {
+                        folder: path.clone(),
+                        name: name.clone(),
+                    }),
+                    _ => None,
+                };
+                Message::Edited {
+                    volume_id,
+                    path,
+                    result,
+                    undo,
+                }
+            },
+        )
     }
 
     fn set_entries(&mut self, entries: Vec<dto::Entry>) {
@@ -3079,7 +3089,7 @@ impl Handler {
             }
         }
         let service = Arc::clone(&self.service);
-        Task::perform(
+        guard::perform(
             async move {
                 for folder in folders {
                     match service
@@ -3096,9 +3106,11 @@ impl Handler {
                         _ => unknown = true,
                     }
                 }
-                (names, (!unknown).then_some(bytes))
+                (!unknown).then_some(bytes)
             },
-            |(names, bytes)| Message::DeleteCounted { names, bytes },
+            // The size is not known, which the question already has a word for.
+            || None,
+            move |bytes| Message::DeleteCounted { names, bytes },
         )
     }
 
@@ -3271,12 +3283,13 @@ impl Handler {
         };
         let what = undo.banner();
         let service = Arc::clone(&self.service);
-        Task::perform(
+        guard::perform(
             async move {
                 undo::undo(service, volume_id, undo)
                     .await
                     .map_err(error::to_error_response)
             },
+            || Err(guard::crashed()),
             move |result| Message::Undone {
                 volume_id,
                 what,
@@ -3483,13 +3496,14 @@ impl Handler {
             self.sizing = Some(cancel.clone());
             let (service, run) = (Arc::clone(&self.service), self.size_run);
             let path = mapper::child_path(&folder, &name);
-            return Task::perform(
+            return guard::perform(
                 async move {
                     service
                         .folder_size(volume_id, &path, cancel)
                         .await
                         .map_err(error::to_error_response)
                 },
+                || Err(guard::crashed()),
                 move |result| Message::FolderSized {
                     run,
                     name: name.clone(),
@@ -3649,8 +3663,12 @@ impl Handler {
             .map(|entry| {
                 self.thumbnails.insert(entry.name.clone(), Thumb::Loading);
                 let service = Arc::clone(&self.service);
-                Task::perform(
+                // A panic means no picture: the tile shows its kind. It is not
+                // a lost phone, which is what an `Err` would say.
+                let (folder, name) = (path.clone(), entry.name.clone());
+                guard::perform(
                     fetch_thumbnail(service, volume_id, path.clone(), entry),
+                    move || (folder, name, Ok(None)),
                     move |(path, name, picture)| match picture {
                         Ok(picture) => Message::Thumbnail {
                             volume_id,
@@ -3753,7 +3771,11 @@ impl Handler {
             cancel,
             allow_remembered,
         );
-        Task::run(updates, move |piece| piece.into_message(volume_id, &path))
+        guard::run(
+            updates,
+            || Piece::Finished(Err(guard::crashed())),
+            move |piece| piece.into_message(volume_id, &path),
+        )
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -4361,7 +4383,8 @@ fn rename_run(
     cancel: dto::Cancel,
 ) -> Task<Message> {
     let asked = renames.len();
-    Task::run(
+    let (stopped_in, stopped_volume) = (path.clone(), volume_id);
+    guard::run(
         iced::stream::channel(
             16,
             async move |mut output: iced::futures::channel::mpsc::Sender<Message>| {
@@ -4392,6 +4415,18 @@ fn rename_run(
                 .await;
             },
         ),
+        // A panic outside the one rename it is caught around: what was done
+        // so far is not known, and the run is over.
+        move || Message::RenamedMany {
+            volume_id: stopped_volume,
+            path: stopped_in,
+            outcome: rename_many::Outcome {
+                done: Vec::new(),
+                failures: Vec::new(),
+                stopped: Some(guard::crashed()),
+            },
+            asked,
+        },
         |message| message,
     )
 }
@@ -10758,6 +10793,215 @@ mod tests {
             panic!("expected an error");
         };
         assert!(error.device_lost);
+    }
+
+    /// Service code that panics ends a listing in a word the pane can show,
+    /// not in silence: no `Listed` would ever come and the pane would say
+    /// "Loading" for ever.
+    #[tokio::test]
+    async fn a_pane_whose_listing_panics_stops_loading_and_says_so() {
+        for call in ["open_listing", "next"] {
+            let mut handler = Handler::new(Arc::new(FakeExplorer::panicking_in(call)));
+            let task = handler.open(storage(), "/".into());
+            assert!(handler.is_loading());
+
+            settle_task(&mut handler, task).await;
+
+            assert!(
+                !handler.is_loading(),
+                "{call}: the pane is not left waiting"
+            );
+            let error = handler.error.as_ref().expect("the pane says what happened");
+            assert_eq!(error.title, "Something went wrong inside the app", "{call}");
+            assert!(!error.device_lost, "{call}: a bug is not a lost phone");
+        }
+    }
+
+    // ---- service code that panics: the pane is never left waiting ----
+
+    #[tokio::test]
+    async fn a_paste_that_panics_is_a_failure_banner_not_a_pane_stuck_pasting() {
+        let mut handler = pasting_pane(Arc::new(FakeExplorer::panicking_in("paste")));
+        let task = handler.paste(dto::Paste::Copy, vec![cut_from("/", &["notes.txt"])]);
+        assert!(handler.is_pasting());
+
+        settle_task(&mut handler, task).await;
+
+        assert!(!handler.is_pasting(), "edits are not held for ever");
+        let notice = handler
+            .notice
+            .as_ref()
+            .expect("the pane says what happened");
+        assert!(notice.problem);
+    }
+
+    #[tokio::test]
+    async fn a_new_folder_with_items_that_panics_frees_the_pane_again() {
+        let service = Arc::new(FakeExplorer::panicking_in("make_folder"));
+        let mut handler = grouping_two(service, &[]);
+        let task = handler.update(Message::Request(Request::NewFolderWithItems));
+        assert!(handler.is_pasting());
+
+        settle_all(&mut handler, task).await;
+
+        assert!(!handler.is_pasting(), "edits are not held for ever");
+        assert!(handler.notice.as_ref().is_some_and(|notice| notice.problem));
+    }
+
+    #[tokio::test]
+    async fn a_rename_that_panics_stops_the_editor_waiting_and_says_why() {
+        let mut handler = Handler::new(Arc::new(FakeExplorer::panicking_in("rename")));
+        let _ = handler.open(storage(), "/".into());
+        let _ = handler.update(listed("/", &[file("notes.txt")]));
+        request(&mut handler, Request::Select("notes.txt".into()));
+        request(&mut handler, Request::Rename);
+        request(&mut handler, Request::EditName("plan.txt".into()));
+
+        let submit = handler.update(Message::Request(Request::Submit));
+        assert!(handler.editor.as_ref().is_some_and(|editor| editor.busy));
+        settle_task(&mut handler, submit).await;
+
+        let editor = handler.editor.as_ref().expect("the editor stays open");
+        assert!(!editor.busy, "it is not left on Working…");
+        let error = editor.error.as_ref().expect("and shows the problem");
+        assert_eq!(error.title, "Something went wrong inside the app");
+    }
+
+    #[tokio::test]
+    async fn an_undo_that_panics_is_a_banner_and_nothing_stays_pending() {
+        let mut handler = Handler::new(Arc::new(FakeExplorer::panicking_in("rename")));
+        let _ = handler.open(storage(), "/".into());
+        let _ = handler.update(listed("/", &[file("plan.txt")]));
+        handler.last_undo = Some((
+            1,
+            Undo::Renamed {
+                folder: "/".into(),
+                from: "notes.txt".into(),
+                to: "plan.txt".into(),
+            },
+        ));
+
+        let task = handler.undo();
+        settle_task(&mut handler, task).await;
+
+        assert!(!handler.can_undo(), "once: there is no redo");
+        let notice = handler
+            .notice
+            .as_ref()
+            .expect("the pane says what happened");
+        assert!(notice.problem);
+    }
+
+    #[tokio::test]
+    async fn a_folder_size_count_that_panics_leaves_no_cell_counting() {
+        let mut handler = Handler::new(Arc::new(FakeExplorer::panicking_in("folder_size")));
+        let _ = handler.open(storage(), "/".into());
+        let _ = handler.set_view(dto::ViewMode::List);
+        let _ = handler.set_folder_sizes(true);
+        let task = handler.update(listing_with_folders());
+
+        settle_all(&mut handler, task).await;
+
+        for folder in ["Small", "Big", "Empty"] {
+            assert_eq!(size_of(&handler, folder), "—", "{folder} is not counting");
+        }
+        assert!(handler.sizing.is_none(), "and the count is not held open");
+    }
+
+    #[tokio::test]
+    async fn a_delete_count_that_panics_leaves_the_question_answerable() {
+        let service = FakeExplorer {
+            panics_in: Some("folder_size"),
+            ..FakeExplorer::new(Ok(vec![]))
+        };
+        let mut handler = Handler::new(Arc::new(service));
+        handler.set_keep_deleted(true);
+        let _ = handler.open(storage(), "/".into());
+        let _ = handler.update(listed("/", &[folder("Trip")]));
+
+        ask_to_delete(&mut handler, &["Trip"]).await;
+
+        assert_eq!(
+            keep_of(&handler),
+            Some(Keep::Unknown),
+            "Delete is not left greyed while counting"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thumbnail_that_panics_means_no_picture_and_not_a_lost_phone() {
+        let mut handler = Handler::new(Arc::new(FakeExplorer::panicking_in("thumbnail")));
+        let _ = handler.open(storage(), "/".into());
+        let _ = handler.update(listed("/", &[file("a.jpg")]));
+
+        let task = handler.set_view(dto::ViewMode::Grid);
+        let (messages, _) = crate::handler::testing::drain(task).await;
+
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::Thumbnail { picture: None, .. }]
+            ),
+            "the tile shows its kind and the phone stays open: {messages:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rename_that_panics_among_many_is_that_items_failure_and_the_rest_go_on() {
+        let broken: Arc<dyn Service> = Arc::new(FakeExplorer::panicking_in("rename"));
+        let renames = vec![
+            ("a.jpg".to_owned(), "x.jpg".to_owned()),
+            ("b.jpg".to_owned(), "y.jpg".to_owned()),
+        ];
+
+        let outcome =
+            rename_many::rename_each(broken, 1, "/".into(), renames, dto::Cancel::new(), |_| {})
+                .await;
+
+        assert!(outcome.done.is_empty());
+        assert!(outcome.stopped.is_none(), "a bug is not a lost phone");
+        let failed: Vec<_> = outcome
+            .failures
+            .iter()
+            .map(|(name, error)| (name.as_str(), error.source.clone()))
+            .collect();
+        assert_eq!(
+            failed,
+            [
+                ("a.jpg", dto::Error::Crashed),
+                ("b.jpg", dto::Error::Crashed)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_name_lookup_that_panics_just_offers_nothing() {
+        let service = Arc::new(FakeExplorer::panicking_in("folder_names"));
+        let mut handler = in_dcim(service);
+        request(&mut handler, Request::GoToFolder);
+
+        let asked = handler.update(Message::Request(Request::EditName("/Music/".into())));
+        settle_task(&mut handler, asked).await;
+
+        assert!(handler.is_editing(), "the dialog still works");
+        assert!(!offers(&handler, "Jazz"));
+    }
+
+    #[tokio::test]
+    async fn tidying_up_after_a_new_folder_that_got_nothing_still_reads_the_pane_again() {
+        let service = Arc::new(FakeExplorer::panicking_in("delete"));
+        let mut handler = grouping_two(service, &[]);
+        let refused = error::to_error_response(dto::Error::Unsupported);
+
+        let task = handler.grouped(1, "/".into(), "New Folder With Items".into(), Err(refused));
+        let (messages, _) = crate::handler::testing::drain(task).await;
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::Request(Request::Refresh))),
+            "the pane reads the folder again whatever the tidying did: {messages:?}"
+        );
     }
 
     #[tokio::test]

@@ -2,8 +2,12 @@ VIRTUAL_PHONE ?= $(CURDIR)/.virtual-phone
 
 .PHONY: run run-virtual run-virtual-two build release universal app dmg icon test test-intel test-large test-vendor cli lint fmt coverage prune
 
-# Line coverage the workspace must keep.
-COVERAGE_MIN ?= 75
+# Line coverage the workspace must keep. CI measured 97.8% when this was set,
+# so 96 leaves room for noise but fails a change that lands a lot of code with
+# no test (at 75 about 18,000 lines could have gone untested). If a change
+# really can't be tested (a new piece of AppKit), say so in the pull request
+# and lower this number on purpose, in the same commit.
+COVERAGE_MIN ?= 96
 
 # cargo never prunes `target/`: incremental caches, test binaries of older code
 # and the coverage build pile up (one checkout reached 201 GB). Past

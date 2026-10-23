@@ -818,24 +818,31 @@ async fn retrying_the_move_of_a_five_thousand_file_folder_sends_nothing_again() 
     v.paste(Paste::Copy, "/Music", &["Big"], "/Download")
         .await
         .unwrap();
-    let started = std::time::Instant::now();
+    let heard = v.transfer.device.activity().times_heard();
 
     let summary = v.retry("/Music", &["Big"], "/Download").await.unwrap();
 
-    eprintln!("retry of 5,000 files, all there: {:?}", started.elapsed());
+    let asks = v.transfer.device.activity().times_heard() - heard;
     assert_eq!(summary.files, 0, "nothing is read or sent again");
     assert_eq!(summary.already_there, 5_000);
     assert_eq!(summary.merged, 1);
     assert_eq!(v.names("Download").len(), 1);
     assert!(!v.exists("Music/Big"), "the originals went");
-    // One listing of the folder, found by name after that: not a search for
-    // each of 5,000 files. A search per file would take far longer than this,
-    // and the limit leaves room for a slow machine (a CI runner takes ~3x).
-    assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    // About five answers a file (looking each original up and deleting it, as
+    // a retried move must), and never a listing of the folder for each file,
+    // which would be millions. (Counted, not timed: the old 60 s stopwatch took
+    // 14 s on a quiet machine and could not tell either from a slow runner.
+    // A search among the folder's names for each file is the business of
+    // `merging_a_folder_of_five_thousand_files_finds_each_by_name` in
+    // `upload.rs`, which times the `Children` lookups this copy uses too.)
+    assert!(
+        asks <= 8 * 5_000,
+        "{asks} answers from the phone for 5,000 files"
+    );
 }
 
 #[tokio::test]
-async fn five_thousand_selected_files_are_named_in_linear_time() {
+async fn five_thousand_selected_files_cost_the_phone_a_few_answers_each() {
     // Select all in a folder: 5,000 sources, each named among the others.
     let v = via().await;
     for i in 0..5_000 {
@@ -844,23 +851,27 @@ async fn five_thousand_selected_files_are_named_in_linear_time() {
     v.rescan();
     let names: Vec<String> = (0..5_000).map(|i| format!("{i:05}.jpg")).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let started = std::time::Instant::now();
+    let heard = v.transfer.device.activity().times_heard();
 
     let summary = v
         .paste(Paste::Copy, "/Music", &names, "/Download")
         .await
         .unwrap();
 
-    eprintln!(
-        "5,000 selected files through the Mac in {:?}",
-        started.elapsed()
-    );
+    let asks = v.transfer.device.activity().times_heard() - heard;
     assert_eq!(summary.files, 5_000);
     assert_eq!(v.names("Download").len(), 5_000);
-    // A guard against naming each file by a search among the rest, not a
-    // benchmark: about 12 s alone in a debug build, twice that with the
-    // whole suite running beside it.
-    assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    // About eight answers a file (the read, the new object and the send, each
+    // heard from), and never a listing of the folder for each file, which
+    // would be millions. Counted, not timed: the old 60 s stopwatch took
+    // 11 s under the whole suite and a slow runner could fail it. A search
+    // among the folder's names for each file is guarded where those lookups
+    // live: `merging_a_folder_of_five_thousand_files_finds_each_by_name` in
+    // `upload.rs` (3 s against its 60) and `names.rs`.
+    assert!(
+        asks <= 12 * 5_000,
+        "{asks} answers from the phone for 5,000 files"
+    );
 }
 
 #[tokio::test]
@@ -878,7 +889,7 @@ async fn a_five_thousand_file_folder_goes_through_the_mac_without_filling_it() {
     let most = std::sync::atomic::AtomicU64::new(0);
     let base = v.base.path().to_path_buf();
     let reports = std::sync::atomic::AtomicUsize::new(0);
-    let started = std::time::Instant::now();
+    let heard = v.transfer.device.activity().times_heard();
 
     let summary = v
         .paste_with(
@@ -899,13 +910,16 @@ async fn a_five_thousand_file_folder_goes_through_the_mac_without_filling_it() {
         .await
         .unwrap();
 
-    eprintln!("5,000 files through the Mac in {:?}", started.elapsed());
-    // A few seconds alone (11 s in a debug build); the whole suite running
-    // beside it once pushed it past 15 s, so the bound is loose: it only
-    // catches something gone quadratic, which would take minutes. Forcing
-    // each scratch file to the disk (once 25 s) is caught by the count in
+    let asks = v.transfer.device.activity().times_heard() - heard;
+    // About seven answers a file, and never a listing of the folder for each
+    // file. Counted, not timed: the old 45 s stopwatch took 11 s under the
+    // whole suite and a slow runner could fail it. Forcing each scratch file
+    // to the disk (once 25 s) is caught by the count in
     // `files_on_their_way_back_to_the_phone_are_not_forced_to_the_mac_s_disk`.
-    assert!(started.elapsed() < std::time::Duration::from_secs(45));
+    assert!(
+        asks <= 10 * 5_000,
+        "{asks} answers from the phone for 5,000 files"
+    );
     assert_eq!(summary.files, 5_000);
     assert_eq!(v.names("Download/Big").len(), 5_000);
     assert!(
@@ -1031,8 +1045,8 @@ async fn pasting_out_of_a_big_folder_does_not_read_it_again() {
         5_000
     );
     let reads = v.explorer.full_reads();
+    let heard = v.transfer.device.activity().times_heard();
 
-    let started = std::time::Instant::now();
     let summary = v
         .paste(
             Paste::Move,
@@ -1042,7 +1056,7 @@ async fn pasting_out_of_a_big_folder_does_not_read_it_again() {
         )
         .await
         .unwrap();
-    let took = started.elapsed();
+    let asks = v.transfer.device.activity().times_heard() - heard;
 
     assert_eq!(summary.removal.unwrap().removed, 3);
     assert_eq!(v.names("Music").len(), 3);
@@ -1051,8 +1065,8 @@ async fn pasting_out_of_a_big_folder_does_not_read_it_again() {
         "only the small target was read, never the 5,000 files: {} reads",
         v.explorer.full_reads() - reads
     );
-    // The virtual phone answers "how many items" by reading the directory (about
-    // 0.3 s at this size in a release build); a round trip per file would take
-    // minutes.
-    assert!(took < Duration::from_secs(30), "{took:?}");
+    // The phone answered about fifty times, to find the three files, check
+    // them and remove them; a round trip per file of the 5,000 would be 5,000
+    // or more. (Counted, not timed: a stopwatch here only measured the machine.)
+    assert!(asks < 500, "{asks} answers from the phone for three files");
 }

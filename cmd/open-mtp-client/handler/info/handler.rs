@@ -9,6 +9,7 @@ use internal::dto;
 use super::mapper;
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::handler::guard;
 use crate::i18n::t;
 
 /// Where Get Info's items are.
@@ -115,15 +116,20 @@ impl Handler {
         let cancel = dto::Cancel::new();
         self.cancel = Some(cancel.clone());
         let base = mapper::base(&subject.items);
-        Task::run(
+        let run = self.run;
+        guard::run(
             count(
                 Arc::clone(&self.service),
                 subject.place,
                 folders,
                 base,
                 cancel,
-                self.run,
+                run,
             ),
+            move || Message::Finished {
+                run,
+                result: Err(guard::crashed()),
+            },
             |message| message,
         )
     }
@@ -345,6 +351,24 @@ mod tests {
         iced_test::simulator(handler.view())
             .find(wanted.to_owned())
             .is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_count_that_panics_ends_with_the_error_not_an_endless_count() {
+        let mut handler = Handler::new(Arc::new(FakeInfo::panicking()));
+        let task = handler.open(phone_subject(vec![folder("Camera")]));
+        assert!(handler.shown.as_ref().unwrap().counting);
+
+        for message in drain(task).await.0 {
+            let _ = handler.update(message);
+        }
+
+        let shown = handler.shown.as_ref().unwrap();
+        assert!(!shown.counting, "not left counting");
+        assert_eq!(
+            shown.error.as_ref().map(|error| error.source.clone()),
+            Some(dto::Error::Crashed)
+        );
     }
 
     #[tokio::test]

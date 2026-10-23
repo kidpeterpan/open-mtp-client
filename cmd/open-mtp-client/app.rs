@@ -17,7 +17,7 @@ use internal::service::local;
 
 use crate::handler::drop_spot::{Origin, SidebarDrop, Spot};
 use crate::handler::{
-    crash, device, explorer, help, import, info, menubar, mirror, places, preview, search,
+    crash, device, explorer, guard, help, import, info, menubar, mirror, places, preview, search,
     settings, transfer,
 };
 // Free Up Space; `space` is iced's widget here.
@@ -770,9 +770,11 @@ impl App {
                 }
                 self.refresh_pending = true;
                 // Built lazily: the timer needs the runtime the task runs on.
-                Task::perform(async { tokio::time::sleep(CHANGE_SETTLE).await }, |()| {
-                    Message::PhoneChangesSettled
-                })
+                guard::perform(
+                    async { tokio::time::sleep(CHANGE_SETTLE).await },
+                    || (),
+                    |()| Message::PhoneChangesSettled,
+                )
             }
             Message::PhoneChangesSettled => {
                 self.refresh_pending = false;
@@ -832,7 +834,13 @@ impl App {
                 Task::batch([opened, ordered])
             }
             Message::Space(message) => {
-                let removed = matches!(message, freeing::Message::Removed { result: Ok(_), .. });
+                // A crash part-way counts too: some files may be gone.
+                let removed = matches!(&message, freeing::Message::Removed { result: Ok(_), .. })
+                    || matches!(
+                        &message,
+                        freeing::Message::Removed { result: Err(error), .. }
+                            if error.source == dto::Error::Crashed
+                    );
                 let task = self.space.update(message).map(Message::Space);
                 if !removed {
                     return task;
@@ -1192,9 +1200,11 @@ impl App {
                 self.dropped.push(path);
                 if first {
                     // Built lazily: the timer needs the runtime the task runs on.
-                    Task::perform(async { tokio::time::sleep(DROP_SETTLE).await }, |()| {
-                        Message::DropSettled
-                    })
+                    guard::perform(
+                        async { tokio::time::sleep(DROP_SETTLE).await },
+                        || (),
+                        |()| Message::DropSettled,
+                    )
                 } else {
                     Task::none()
                 }
@@ -1283,11 +1293,12 @@ impl App {
                 let change = self.window_changes;
                 // The timer is made inside the task: outside the runtime it
                 // would panic.
-                Task::perform(
+                guard::perform(
                     async move {
                         tokio::time::sleep(WINDOW_SETTLE).await;
                         change
                     },
+                    move || change,
                     Message::WindowSettled,
                 )
             }
@@ -5546,6 +5557,32 @@ mod tests {
         )
         .await;
         assert!(!reloads_space(&failed));
+    }
+
+    #[tokio::test]
+    async fn a_removal_that_crashed_part_way_still_reads_the_phone_again() {
+        let mut app = two_listed_panes();
+        let _ = app.update(Message::Device(device::Message::Request(
+            device::Request::FreeUpSpace,
+        )));
+
+        // Some files may be gone by then, so what is shown can't be trusted.
+        let messages = sent_by(
+            &mut app,
+            Message::Space(freeing::Message::Removed {
+                look: 1,
+                result: Err(to_error_response(dto::Error::Crashed)),
+            }),
+        )
+        .await;
+
+        assert!(reloads_space(&messages), "{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, Message::DevicePane(explorer::Message::Listed { .. }))),
+            "the folder shown is read again"
+        );
     }
 
     #[tokio::test]

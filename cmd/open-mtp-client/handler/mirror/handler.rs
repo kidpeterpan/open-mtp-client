@@ -14,6 +14,7 @@ use internal::dto::{self, MirrorDirection};
 use super::mapper;
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::handler::guard;
 use crate::i18n::{english_only, t, tf};
 
 /// Told how many items of the phone folder have been read so far.
@@ -232,7 +233,7 @@ impl Handler {
         dialog.preview = Preview::Comparing { seen: 0 };
         let request = dialog.request();
         let (service, cancel) = (Arc::clone(&self.service), dialog.cancel.clone());
-        Task::run(
+        guard::run(
             iced::stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
                 let counted = Mutex::new(output.clone());
                 let seen: Seen = Box::new(move |count| {
@@ -246,6 +247,10 @@ impl Handler {
                     .map_err(error::to_error_response);
                 let _ = output.send(Message::Previewed { preview, result }).await;
             }),
+            move || Message::Previewed {
+                preview,
+                result: Err(guard::crashed()),
+            },
             |message| message,
         )
     }
@@ -499,6 +504,23 @@ mod tests {
 
     fn shows(handler: &Handler, words: &str) -> bool {
         iced_test::simulator(handler.view()).find(words).is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_comparison_that_panics_ends_as_a_failure_not_an_endless_one() {
+        let (handler, _) = opened(FakeMirror {
+            panics: true,
+            ..FakeMirror::default()
+        })
+        .await;
+
+        assert!(
+            matches!(
+                &handler.dialog.as_ref().unwrap().preview,
+                Preview::Failed(error) if error.source == dto::Error::Crashed
+            ),
+            "not left on Comparing…"
+        );
     }
 
     #[tokio::test]

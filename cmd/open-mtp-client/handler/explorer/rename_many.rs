@@ -14,6 +14,7 @@ use super::handler::{Message, Service};
 use super::request::{ManyField, ManyMode, Request};
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::format::format_count;
+use crate::handler::guard;
 use crate::i18n::{count, t, tf};
 
 /// Rows of new names the dialog shows: enough to see the pattern, never a
@@ -200,7 +201,7 @@ pub async fn rename_each(
             outcome.stopped = Some(error::to_error_response(dto::Error::Cancelled));
             break;
         }
-        match service.rename(volume_id, &folder, &from, &to).await {
+        match guard::guarded(service.rename(volume_id, &folder, &from, &to)).await {
             Ok(name) => outcome.done.push((from, name)),
             Err(err) => {
                 let response = error::to_error_response(err);
