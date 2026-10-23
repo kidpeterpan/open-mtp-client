@@ -83,6 +83,9 @@ pub struct FakeDevice {
     /// each time they were asked to be ended.
     pub cameras_only: bool,
     pub cameras_ended: std::sync::atomic::AtomicUsize,
+    /// The call that panics (`"connect"`, `"phones"`, `"battery"`,
+    /// `"storages"`, `"disconnect"`, `"folders_present"` or `"release"`).
+    pub panics_in: Option<&'static str>,
 }
 
 /// A phone plugged in, as the fake lists it.
@@ -114,13 +117,20 @@ impl FakeDevice {
             first_connects: Mutex::new(std::collections::VecDeque::new()),
             cameras_only: false,
             cameras_ended: std::sync::atomic::AtomicUsize::new(0),
+            panics_in: None,
         }
+    }
+
+    /// Panics if this is the call a test asked to break.
+    fn breaks_in(&self, call: &'static str) {
+        assert!(self.panics_in != Some(call), "the fake {call} broke");
     }
 }
 
 #[async_trait::async_trait]
 impl device::Service for FakeDevice {
     async fn connect(&self, prefer: Option<String>) -> Result<dto::Device, dto::Error> {
+        self.breaks_in("connect");
         self.asked.lock().unwrap().push(prefer.clone());
         if let Some(first) = self.first_connects.lock().unwrap().pop_front() {
             return first;
@@ -145,10 +155,12 @@ impl device::Service for FakeDevice {
     }
 
     async fn phones(&self) -> Result<Vec<dto::Phone>, dto::Error> {
+        self.breaks_in("phones");
         Ok(self.phones.clone())
     }
 
     async fn battery(&self) -> Result<Option<u8>, dto::Error> {
+        self.breaks_in("battery");
         self.battery_asks
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut answers = self.battery.lock().unwrap();
@@ -160,10 +172,12 @@ impl device::Service for FakeDevice {
     }
 
     async fn storages(&self) -> Result<Vec<dto::Storage>, dto::Error> {
+        self.breaks_in("storages");
         self.storages.clone()
     }
 
     async fn disconnect(&self) -> Result<(), dto::Error> {
+        self.breaks_in("disconnect");
         Ok(())
     }
 
@@ -194,6 +208,7 @@ impl device::Service for FakeDevice {
         storage_id: u64,
         paths: Vec<String>,
     ) -> Result<Vec<String>, dto::Error> {
+        self.breaks_in("folders_present");
         self.places_asked.lock().unwrap().push(storage_id);
         Ok(paths
             .into_iter()
@@ -202,6 +217,7 @@ impl device::Service for FakeDevice {
     }
 
     async fn release(&self, holders: &[dto::Holder]) {
+        self.breaks_in("release");
         self.released
             .lock()
             .unwrap()
@@ -246,6 +262,11 @@ pub struct FakeExplorer {
     pub paste_results: Mutex<std::collections::VecDeque<Result<dto::PasteSummary, dto::Error>>>,
     /// Why every thumbnail fails, if it does.
     pub thumbnail_error: Option<dto::Error>,
+    /// The call that panics (`"open_listing"`, `"next"`, `"paste"`,
+    /// `"make_folder"`, `"rename"`, `"delete"`, `"folder_size"`,
+    /// `"folder_names"` or `"thumbnail"`): the service code the pane waits on
+    /// breaking, which no scripted answer can show.
+    pub panics_in: Option<&'static str>,
 }
 
 /// A listing that hands out what it was given.
@@ -255,6 +276,16 @@ pub struct ScriptedListing(pub std::collections::VecDeque<Result<dto::ListingUpd
 impl explorer::Listing for ScriptedListing {
     async fn next(&mut self) -> Option<Result<dto::ListingUpdate, dto::Error>> {
         self.0.pop_front()
+    }
+}
+
+/// A listing whose first piece never comes: reading it panics.
+struct PanicsOnNext;
+
+#[async_trait::async_trait]
+impl explorer::Listing for PanicsOnNext {
+    async fn next(&mut self) -> Option<Result<dto::ListingUpdate, dto::Error>> {
+        panic!("the fake listing broke");
     }
 }
 
@@ -289,7 +320,21 @@ impl FakeExplorer {
             pastes: Mutex::new(Vec::new()),
             paste_results: Mutex::new(std::collections::VecDeque::new()),
             thumbnail_error: None,
+            panics_in: None,
         }
+    }
+
+    /// A service whose `call` panics.
+    pub fn panicking_in(call: &'static str) -> Self {
+        Self {
+            panics_in: Some(call),
+            ..Self::new(Ok(vec![]))
+        }
+    }
+
+    /// Panics if this is the call a test asked to break.
+    fn breaks_in(&self, call: &'static str) {
+        assert!(self.panics_in != Some(call), "the fake {call} broke");
     }
 
     /// Answers the next pastes with `results`, in order.
@@ -343,6 +388,7 @@ impl explorer::Service for FakeExplorer {
         parent: &str,
         name: &str,
     ) -> Result<String, dto::Error> {
+        self.breaks_in("make_folder");
         self.record(format!("mkdir {volume_id} {parent} {name}"));
         self.edit.clone().map(|()| name.to_owned())
     }
@@ -354,6 +400,7 @@ impl explorer::Service for FakeExplorer {
         old: &str,
         new: &str,
     ) -> Result<String, dto::Error> {
+        self.breaks_in("rename");
         self.record(format!("rename {volume_id} {parent} {old} -> {new}"));
         if self.refuse_rename == Some(old) {
             return Err(dto::Error::NameTaken(new.to_owned()));
@@ -376,6 +423,7 @@ impl explorer::Service for FakeExplorer {
         path: &str,
         _cancel: dto::Cancel,
     ) -> Result<dto::Tally, dto::Error> {
+        self.breaks_in("folder_size");
         self.sized.lock().unwrap().push(path.to_owned());
         self.folder_sizes
             .iter()
@@ -389,6 +437,7 @@ impl explorer::Service for FakeExplorer {
     }
 
     async fn folder_names(&self, _volume_id: u64, path: &str) -> Vec<String> {
+        self.breaks_in("folder_names");
         self.folders_asked.lock().unwrap().push(path.to_owned());
         self.folders.clone()
     }
@@ -399,11 +448,13 @@ impl explorer::Service for FakeExplorer {
         parent: &str,
         names: &[String],
     ) -> Result<(), dto::Error> {
+        self.breaks_in("delete");
         self.record(format!("delete {volume_id} {parent} {}", names.join(",")));
         self.edit.clone()
     }
 
     async fn paste(&self, request: &dto::PasteRequest) -> Result<dto::PasteSummary, dto::Error> {
+        self.breaks_in("paste");
         self.pastes.lock().unwrap().push(request.clone());
         if let Some(answer) = self.paste_results.lock().unwrap().pop_front() {
             return answer;
@@ -425,6 +476,7 @@ impl explorer::Service for FakeExplorer {
         _folder: &str,
         entry: &dto::Entry,
     ) -> Result<Option<dto::Thumbnail>, dto::Error> {
+        self.breaks_in("thumbnail");
         self.record(format!("thumbnail {}", entry.name));
         if let Some(error) = &self.thumbnail_error {
             return Err(error.clone());
@@ -452,10 +504,14 @@ impl explorer::Service for FakeExplorer {
         cancel: dto::Cancel,
         allow_remembered: bool,
     ) -> Result<Box<dyn explorer::Listing>, dto::Error> {
+        self.breaks_in("open_listing");
         self.opened.lock().unwrap().push(cancel);
         self.allowed.lock().unwrap().push(allow_remembered);
         if let Some(err) = &self.open_fails {
             return Err(err.clone());
+        }
+        if self.panics_in == Some("next") {
+            return Ok(Box::new(PanicsOnNext));
         }
         if let Some(pieces) = self.pieces.lock().unwrap().take() {
             return Ok(Box::new(ScriptedListing(pieces)));
@@ -526,6 +582,10 @@ pub struct FakeTransfer {
     pub mac_unreadable: bool,
     /// A service with a bug in it: a download panics.
     pub panics_on_download: bool,
+    /// A side call that panics: `"existing"`, `"edit_on_mac"`,
+    /// `"working_copies"`, `"copy_states"`, `"save_report"` or
+    /// `"discard_edit"`.
+    pub panics_in: Option<&'static str>,
 }
 
 impl FakeTransfer {
@@ -561,7 +621,13 @@ impl FakeTransfer {
             download_conflicts: Mutex::new(Vec::new()),
             mac_unreadable: false,
             panics_on_download: false,
+            panics_in: None,
         }
+    }
+
+    /// Panics if this is the side call a test asked to break.
+    fn breaks_in(&self, call: &'static str) {
+        assert!(self.panics_in != Some(call), "the fake {call} broke");
     }
 
     pub fn reporting(self, updates: Vec<dto::TransferProgress>) -> Self {
@@ -623,6 +689,7 @@ impl transfer::Service for FakeTransfer {
     }
 
     async fn edit_on_mac(&self, request: dto::EditRequest) -> Result<dto::WorkingCopy, dto::Error> {
+        self.breaks_in("edit_on_mac");
         self.edit_requests.lock().unwrap().push(request.clone());
         self.edit.clone().map(|copy| dto::WorkingCopy {
             name: request.name,
@@ -631,10 +698,12 @@ impl transfer::Service for FakeTransfer {
     }
 
     async fn working_copies(&self) -> Vec<dto::WorkingCopy> {
+        self.breaks_in("working_copies");
         self.copies.clone()
     }
 
     async fn copy_states(&self, paths: Vec<String>) -> Vec<Option<dto::CopyState>> {
+        self.breaks_in("copy_states");
         let states = self.copy_states.lock().unwrap();
         paths
             .iter()
@@ -656,6 +725,7 @@ impl transfer::Service for FakeTransfer {
     }
 
     async fn discard_edit(&self, copy: dto::WorkingCopy) -> Result<(), dto::Error> {
+        self.breaks_in("discard_edit");
         self.discarded.lock().unwrap().push(copy.id);
         Ok(())
     }
@@ -716,6 +786,7 @@ impl transfer::Service for FakeTransfer {
 
     /// Reports every source as taken.
     async fn existing(&self, request: dto::UploadRequest) -> Result<Vec<String>, dto::Error> {
+        self.breaks_in("existing");
         Ok(request
             .sources
             .iter()
@@ -741,6 +812,7 @@ impl transfer::Service for FakeTransfer {
     }
 
     async fn save_report(&self, folder: String, text: String) -> Result<String, dto::Error> {
+        self.breaks_in("save_report");
         let path = format!("{folder}/Transfer report.tsv");
         self.reports.lock().unwrap().push((folder, text));
         Ok(path)
@@ -884,6 +956,15 @@ pub struct FakeHelp {
     /// Where the bundled command-line tool is, as an app run from its
     /// bundle would say.
     pub cli: Option<String>,
+    /// The call that panics: `"checkup"`, `"release"`, `"mac"` or
+    /// `"time_reading"`.
+    pub panics_in: Option<&'static str>,
+}
+
+impl FakeHelp {
+    fn breaks_in(&self, call: &'static str) {
+        assert!(self.panics_in != Some(call), "the fake {call} broke");
+    }
 }
 
 impl Default for FakeHelp {
@@ -909,6 +990,7 @@ impl Default for FakeHelp {
                 took: std::time::Duration::from_millis(1_430),
             }),
             cli: None,
+            panics_in: None,
         }
     }
 }
@@ -916,12 +998,14 @@ impl Default for FakeHelp {
 #[async_trait::async_trait]
 impl help::Service for FakeHelp {
     async fn checkup(&self) -> dto::Diagnosis {
+        self.breaks_in("checkup");
         self.checks
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.diagnosis.clone()
     }
 
     async fn release(&self, holders: &[dto::Holder]) {
+        self.breaks_in("release");
         self.released
             .lock()
             .unwrap()
@@ -929,6 +1013,7 @@ impl help::Service for FakeHelp {
     }
 
     async fn mac(&self) -> dto::MacInfo {
+        self.breaks_in("mac");
         self.mac.clone()
     }
 
@@ -942,6 +1027,7 @@ impl help::Service for FakeHelp {
         storage_id: u64,
         path: &str,
     ) -> Result<dto::ReadTiming, dto::Error> {
+        self.breaks_in("time_reading");
         self.readings
             .lock()
             .unwrap()
@@ -999,6 +1085,8 @@ pub struct FakeSearch {
     pub pieces: Vec<Result<dto::WalkUpdate, dto::Error>>,
     /// Each walk asked for: the storage, and whether hidden files were wanted.
     pub walks: Mutex<Vec<(u64, bool)>>,
+    /// Where it panics: `"walk"` (starting) or `"next"` (the first piece).
+    pub panics_in: Option<&'static str>,
 }
 
 impl FakeSearch {
@@ -1027,7 +1115,18 @@ impl FakeSearch {
                 ..dto::WalkUpdate::default()
             })],
             walks: Mutex::new(Vec::new()),
+            panics_in: None,
         }
+    }
+}
+
+/// A walk whose first piece never comes: reading it panics.
+struct WalkPanicsOnNext;
+
+#[async_trait::async_trait]
+impl search::Walking for WalkPanicsOnNext {
+    async fn next(&mut self) -> Option<Result<dto::WalkUpdate, dto::Error>> {
+        panic!("the fake walk broke");
     }
 }
 
@@ -1048,10 +1147,14 @@ impl search::Service for FakeSearch {
         include_hidden: bool,
         _cancel: dto::Cancel,
     ) -> Result<Box<dyn search::Walking>, dto::Error> {
+        assert!(self.panics_in != Some("walk"), "the fake walk broke");
         self.walks
             .lock()
             .unwrap()
             .push((storage_id, include_hidden));
+        if self.panics_in == Some("next") {
+            return Ok(Box::new(WalkPanicsOnNext));
+        }
         Ok(Box::new(ScriptedWalk(
             self.pieces.iter().cloned().collect(),
         )))
@@ -1066,6 +1169,8 @@ pub struct FakeSpace {
     pub removal: Result<dto::Removal, dto::Error>,
     pub looks: Mutex<Vec<u64>>,
     pub removals: Mutex<Vec<dto::FreeUpRequest>>,
+    /// The call that panics: `"look"` or `"free_up"`.
+    pub panics_in: Option<&'static str>,
 }
 
 impl Default for FakeSpace {
@@ -1076,6 +1181,7 @@ impl Default for FakeSpace {
             removal: Ok(dto::Removal::default()),
             looks: Mutex::new(Vec::new()),
             removals: Mutex::new(Vec::new()),
+            panics_in: None,
         }
     }
 }
@@ -1088,6 +1194,7 @@ impl crate::handler::space::Service for FakeSpace {
         _cancel: dto::Cancel,
         progress: crate::handler::space::Told<dto::SpaceProgress>,
     ) -> Result<dto::SpaceReport, dto::Error> {
+        assert!(self.panics_in != Some("look"), "the fake look broke");
         self.looks.lock().unwrap().push(storage_id);
         for update in &self.progress {
             progress(*update);
@@ -1101,6 +1208,7 @@ impl crate::handler::space::Service for FakeSpace {
         _cancel: dto::Cancel,
         removed: crate::handler::space::Told<usize>,
     ) -> Result<dto::Removal, dto::Error> {
+        assert!(self.panics_in != Some("free_up"), "the fake free_up broke");
         removed(request.paths.len());
         self.removals.lock().unwrap().push(request);
         self.removal.clone()
@@ -1114,6 +1222,8 @@ pub struct FakeImport {
     pub counts: Vec<usize>,
     /// Every preview asked for.
     pub asked: Mutex<Vec<dto::ImportRequest>>,
+    /// The preview panics.
+    pub panics: bool,
 }
 
 impl FakeImport {
@@ -1122,6 +1232,7 @@ impl FakeImport {
             result,
             counts: Vec::new(),
             asked: Mutex::new(Vec::new()),
+            panics: false,
         }
     }
 }
@@ -1144,6 +1255,7 @@ impl import::Service for FakeImport {
         _cancel: dto::Cancel,
         seen: import::Seen,
     ) -> Result<dto::ImportPreview, dto::Error> {
+        assert!(!self.panics, "the fake import preview broke");
         self.asked.lock().unwrap().push(request);
         for count in &self.counts {
             seen(*count);
@@ -1159,6 +1271,8 @@ pub struct FakeMirror {
     pub counts: Vec<usize>,
     /// Every comparison asked for.
     pub asked: Mutex<Vec<dto::MirrorRequest>>,
+    /// The comparison panics.
+    pub panics: bool,
 }
 
 impl FakeMirror {
@@ -1167,6 +1281,7 @@ impl FakeMirror {
             result,
             counts: Vec::new(),
             asked: Mutex::new(Vec::new()),
+            panics: false,
         }
     }
 }
@@ -1198,6 +1313,7 @@ impl mirror::Service for FakeMirror {
         _cancel: dto::Cancel,
         seen: mirror::Seen,
     ) -> Result<dto::MirrorPreview, dto::Error> {
+        assert!(!self.panics, "the fake mirror comparison broke");
         self.asked.lock().unwrap().push(request);
         for count in &self.counts {
             seen(*count);
@@ -1223,6 +1339,8 @@ pub struct FakePreview {
     pub opened: Mutex<Vec<String>>,
     /// Every set of files shared, and where the menu showed.
     pub shared: Mutex<Vec<SharedFiles>>,
+    /// The fetch panics.
+    pub panics: bool,
 }
 
 impl FakePreview {
@@ -1235,6 +1353,7 @@ impl FakePreview {
             look_fails: false,
             opened: Mutex::new(Vec::new()),
             shared: Mutex::new(Vec::new()),
+            panics: false,
         }
     }
 }
@@ -1256,6 +1375,7 @@ impl preview::Service for FakePreview {
         _cancel: dto::Cancel,
         progress: preview::Progress,
     ) -> Result<dto::Fetched, dto::Error> {
+        assert!(!self.panics, "the fake fetch broke");
         self.fetches.lock().unwrap().push(request);
         for update in &self.updates {
             progress(update.clone());
@@ -1298,6 +1418,8 @@ pub struct FakePlaces {
     pub mirrors: Mutex<Vec<dto::SavedMirror>>,
     /// Every list of saved mirrors written.
     pub mirrors_saved: Mutex<Vec<Vec<dto::SavedMirror>>>,
+    /// Reading the places panics.
+    pub panics: bool,
 }
 
 impl Default for FakePlaces {
@@ -1331,6 +1453,7 @@ impl Default for FakePlaces {
             save_fails: false,
             mirrors: Mutex::new(Vec::new()),
             mirrors_saved: Mutex::new(Vec::new()),
+            panics: false,
         }
     }
 }
@@ -1338,6 +1461,7 @@ impl Default for FakePlaces {
 #[async_trait::async_trait]
 impl places::Service for FakePlaces {
     async fn places(&self) -> Vec<dto::Place> {
+        assert!(!self.panics, "the fake places broke");
         self.places.clone()
     }
 
@@ -1371,6 +1495,8 @@ pub struct FakeInfo {
     pub result: Result<dto::Tally, dto::Error>,
     /// Every folder asked about, in order.
     pub asked: Mutex<Vec<String>>,
+    /// The count panics.
+    pub panics: bool,
 }
 
 impl FakeInfo {
@@ -1378,6 +1504,7 @@ impl FakeInfo {
         Self {
             result: Ok(tally),
             asked: Mutex::new(Vec::new()),
+            panics: false,
         }
     }
 
@@ -1385,6 +1512,15 @@ impl FakeInfo {
         Self {
             result: Err(error),
             asked: Mutex::new(Vec::new()),
+            panics: false,
+        }
+    }
+
+    /// A count that panics.
+    pub fn panicking() -> Self {
+        Self {
+            panics: true,
+            ..Self::counting(dto::Tally::default())
         }
     }
 }
@@ -1398,6 +1534,7 @@ impl info::Service for FakeInfo {
         _cancel: dto::Cancel,
         report: Box<dyn Fn(dto::Tally) + Send + Sync>,
     ) -> Result<dto::Tally, dto::Error> {
+        assert!(!self.panics, "the fake count broke");
         self.asked.lock().unwrap().push(path.to_owned());
         if let Ok(tally) = &self.result {
             report(dto::Tally {

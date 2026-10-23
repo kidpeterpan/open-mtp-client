@@ -10,6 +10,7 @@ use internal::dto;
 use super::mapper;
 use crate::handler::drop_spot::{SidebarDrop, drop_spot};
 use crate::handler::error;
+use crate::handler::guard;
 use crate::i18n::{english_only, t, tf};
 
 #[async_trait::async_trait]
@@ -120,7 +121,13 @@ impl Handler {
     /// Reads the Mac's places, off the UI thread.
     pub fn refresh(&self) -> Task<Message> {
         let service = Arc::clone(&self.service);
-        Task::perform(async move { service.places().await }, Message::Places)
+        // A panic leaves what is shown as it is.
+        let shown = self.places.clone();
+        guard::perform(
+            async move { service.places().await },
+            move || shown,
+            Message::Places,
+        )
     }
 
     /// Pins a folder; one already pinned is left as it is.
@@ -704,6 +711,24 @@ mod tests {
             "Work went; the other phone's pin stayed"
         );
         assert_eq!(service.saved.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_read_of_the_places_that_panics_keeps_the_ones_shown() {
+        let (mut handler, _) = loaded(FakePlaces::default()).await;
+        let before = handler.places.clone();
+        assert!(!before.is_empty());
+        handler.service = Arc::new(FakePlaces {
+            panics: true,
+            ..FakePlaces::default()
+        });
+
+        let refresh = handler.update(Message::Refresh);
+        for message in drain(refresh).await.0 {
+            let _ = handler.update(message);
+        }
+
+        assert_eq!(handler.places, before, "the sidebar is not blanked");
     }
 
     #[tokio::test]

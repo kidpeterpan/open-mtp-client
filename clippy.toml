@@ -1,0 +1,12 @@
+# A panic in a `Task` ends it without a word, and the screen that waited for
+# its answer ("Loading…", "Connecting…", a paste in progress) waits for ever.
+# Tasks are made through `handler::guard`, which gives each one an answer for a
+# panic; it is the only place these are called. `perform` and `run` are thin
+# wrappers over `future` and `stream`, so all four are banned: banning two
+# would leave the other two as a way round.
+disallowed-methods = [
+    { path = "iced::Task::perform", reason = "use handler::guard::perform: it answers if the work panics" },
+    { path = "iced::Task::run", reason = "use handler::guard::run: it answers if the stream panics" },
+    { path = "iced::Task::future", reason = "use handler::guard::perform: it answers if the work panics" },
+    { path = "iced::Task::stream", reason = "use handler::guard::run: it answers if the stream panics" },
+]

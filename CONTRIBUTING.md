@@ -37,7 +37,7 @@ CI runs these on every pull request; run them before you push.
 ```sh
 make lint           # cargo fmt --check, then clippy with warnings as errors
 make test           # the whole suite
-make coverage       # line coverage must stay at or above 75% (needs: cargo install cargo-llvm-cov)
+make coverage       # line coverage must stay at or above 96% (needs: cargo install cargo-llvm-cov)
 make test-vendor    # only if you touched vendor/mtp-rs
 ```
 
@@ -45,6 +45,12 @@ Every behaviour gets a test at the layer it lives in. The suite runs against the
 never needs a device, never plays a real sound, never opens a real window of System Settings and never
 touches the real Trash: those go through small seams (`Opener`, `Trash`, `Processes`, `Usb`…) with a
 recorder or fake in tests. Follow the same pattern for anything new that reaches outside the process.
+
+Tests that guard speed count work instead of timing it: "the phone was asked about three files, not
+5,000" cannot fail on a slow CI runner. Use `Service::full_reads()` for whole-folder reads and
+`device::Service::activity().times_heard()` for every answer the phone gave. A stopwatch limit is only
+for in-memory work with nothing to count, and it needs at least 10 times the time the test takes with
+the whole suite running.
 
 ## How the code is laid out
 

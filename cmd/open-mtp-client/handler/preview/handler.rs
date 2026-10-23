@@ -14,6 +14,7 @@ use internal::dto;
 
 use super::mapper;
 use crate::handler::error::{self, ErrorResponse};
+use crate::handler::guard;
 use crate::i18n::t;
 
 pub type Progress = Box<dyn Fn(dto::TransferProgress) + Send + Sync>;
@@ -206,7 +207,7 @@ impl Handler {
             progress: None,
         });
         let service = Arc::clone(&self.service);
-        Task::run(
+        guard::run(
             iced::stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
                 let updates = Mutex::new(output.clone());
                 let progress: Progress = Box::new(move |progress| {
@@ -221,6 +222,10 @@ impl Handler {
                 };
                 let _ = output.send(Message::Fetched { fetch, result }).await;
             }),
+            move || Message::Fetched {
+                fetch,
+                result: Err(guard::crashed()),
+            },
             |message| message,
         )
     }
@@ -321,6 +326,21 @@ mod tests {
         for message in drain(task).await.0 {
             let _ = handler.update(message);
         }
+    }
+
+    #[tokio::test]
+    async fn a_fetch_that_panics_ends_the_banner_and_says_so() {
+        let mut handler = Handler::new(Arc::new(FakePreview {
+            panics: true,
+            ..FakePreview::default()
+        }));
+        let task = handler.phone(request(&["a.jpg"]));
+        assert!(handler.is_fetching());
+
+        settle(&mut handler, task).await;
+
+        assert!(!handler.is_fetching(), "not left fetching");
+        assert!(handler.is_visible(), "the banner says what happened");
     }
 
     #[test]

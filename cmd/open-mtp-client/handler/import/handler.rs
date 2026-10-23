@@ -13,6 +13,7 @@ use internal::dto;
 use super::mapper;
 use super::request::Request;
 use crate::handler::error::{self, ErrorResponse};
+use crate::handler::guard;
 use crate::i18n::{t, tf};
 
 /// Told how many photos and videos the walk has found so far.
@@ -165,7 +166,7 @@ impl Handler {
             remove_from_phone: false,
         };
         let (service, cancel) = (Arc::clone(&self.service), dialog.cancel.clone());
-        Task::run(
+        guard::run(
             iced::stream::channel(64, async move |mut output: mpsc::Sender<Message>| {
                 let counted = Mutex::new(output.clone());
                 // Best effort: a dropped count is replaced by the next one.
@@ -184,6 +185,10 @@ impl Handler {
                         });
                 let _ = output.send(Message::Previewed { preview, result }).await;
             }),
+            move || Message::Previewed {
+                preview,
+                result: Err(Problem::Failed(guard::crashed())),
+            },
             |message| message,
         )
     }
@@ -360,6 +365,26 @@ mod tests {
 
     fn shows(handler: &Handler, words: &str) -> bool {
         iced_test::simulator(handler.view()).find(words).is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_preview_that_panics_ends_as_a_failure_not_an_endless_look() {
+        let (handler, _) = opened(
+            FakeImport {
+                panics: true,
+                ..FakeImport::default()
+            },
+            false,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &handler.dialog.as_ref().unwrap().preview,
+                Preview::Failed(Problem::Failed(error)) if error.source == dto::Error::Crashed
+            ),
+            "not left on Looking…"
+        );
     }
 
     #[tokio::test]

@@ -40,7 +40,7 @@ jobs:
       - run: make test
 
   coverage:
-    name: Coverage (at least 75% of lines)
+    name: Coverage (at least 96% of lines)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7

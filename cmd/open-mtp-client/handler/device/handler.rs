@@ -13,6 +13,7 @@ use super::response::{DeviceResponse, PhoneResponse, StorageResponse};
 use crate::handler::diagnosis::{self, DiagnosisResponse};
 use crate::handler::drop_spot::{SidebarDrop, Spot, drop_spot};
 use crate::handler::error::{self, ErrorResponse};
+use crate::handler::guard;
 use crate::i18n::{count, english_only, t, tf};
 
 #[async_trait::async_trait]
@@ -253,7 +254,9 @@ impl Handler {
     /// Starts listening for phones being plugged in and unplugged.
     pub fn watch(&self) -> Task<Message> {
         match self.service.watch() {
-            Ok(changes) => Task::run(changes, Message::Hotplug),
+            // Nothing waits on plug events: a panic ends the watching, and the
+            // Connect button still works.
+            Ok(changes) => guard::run_unguarded(changes, Message::Hotplug),
             // Without a watch the Connect button still works.
             Err(_) => Task::none(),
         }
@@ -277,15 +280,15 @@ impl Handler {
             return Task::none();
         };
         let service = Arc::clone(&self.service);
-        Task::perform(
+        guard::perform(
             async move {
-                let result = service
+                service
                     .folders_present(storage_id, mapper::place_candidates())
                     .await
-                    .map_err(error::to_error_response);
-                (key, storage_id, result)
+                    .map_err(error::to_error_response)
             },
-            |(key, storage_id, result)| Message::Places {
+            || Err(guard::crashed()),
+            move |result| Message::Places {
                 key,
                 storage_id,
                 result,
@@ -335,7 +338,9 @@ impl Handler {
                     selected,
                 };
                 Task::batch([
-                    Task::run(changes(Arc::clone(&self.service)), Message::Changed),
+                    // Nothing waits on what the phone announces: a panic ends
+                    // it, and Refresh still reads the phone as it is.
+                    guard::run_unguarded(changes(Arc::clone(&self.service)), Message::Changed),
                     self.list_phones(),
                 ])
             }
@@ -447,7 +452,7 @@ impl Handler {
             return Task::none();
         }
         let service = Arc::clone(&self.service);
-        let storages = Task::perform(
+        let storages = guard::perform(
             async move {
                 service
                     .storages()
@@ -455,6 +460,7 @@ impl Handler {
                     .map(|storages| storages.iter().map(mapper::to_storage_response).collect())
                     .map_err(error::to_error_response)
             },
+            || Err(guard::crashed()),
             Message::StoragesReloaded,
         );
         // Not every phone says when its battery changes; a transfer is a
@@ -468,8 +474,9 @@ impl Handler {
             return Task::none();
         }
         let service = Arc::clone(&self.service);
-        Task::perform(
+        guard::perform(
             async move { service.battery().await.map_err(error::to_error_response) },
+            || Err(guard::crashed()),
             Message::Battery,
         )
     }
@@ -532,7 +539,11 @@ impl Handler {
             to,
             from: Box::new(from),
         };
-        Task::perform(switch(Arc::clone(&self.service), key), Message::Switched)
+        guard::perform(
+            switch(Arc::clone(&self.service), key),
+            || Switch::Failed(guard::crashed().into()),
+            Message::Switched,
+        )
     }
 
     /// The open phone was unplugged. Unplugging is deliberate: straight back
@@ -548,7 +559,7 @@ impl Handler {
     /// Asks which phones are plugged in, for the list in the sidebar.
     fn list_phones(&self) -> Task<Message> {
         let service = Arc::clone(&self.service);
-        Task::perform(
+        guard::perform(
             async move {
                 service
                     .phones()
@@ -556,6 +567,7 @@ impl Handler {
                     .map(|phones| mapper::to_phone_responses(&phones))
                     .unwrap_or_default()
             },
+            Vec::new,
             Message::Phones,
         )
     }
@@ -654,8 +666,10 @@ impl Handler {
     pub fn connect(&mut self) -> Task<Message> {
         self.state = State::Connecting;
         self.notice = None;
-        Task::perform(
+        guard::perform(
             load_connection(Arc::clone(&self.service), self.preferred.clone()),
+            // Nothing else would end "Connecting…".
+            || Err(guard::crashed().into()),
             Message::Connected,
         )
     }
@@ -676,11 +690,13 @@ impl Handler {
         let service = Arc::clone(&self.service);
         let prefer = self.preferred.clone();
         self.state = State::Connecting;
-        Task::perform(
+        guard::perform(
             async move {
-                service.release(&holders).await;
+                // Whatever happens to the quitting, the phone is tried again.
+                let _ = guard::caught(service.release(&holders)).await;
                 load_connection(service, prefer).await
             },
+            || Err(guard::crashed().into()),
             Message::Connected,
         )
     }
@@ -689,10 +705,11 @@ impl Handler {
         let service = Arc::clone(&self.service);
         // A failed close still leaves us without a usable session, so the UI
         // returns to idle either way.
-        Task::perform(
+        guard::perform(
             async move {
                 let _ = service.disconnect().await;
             },
+            || (),
             |()| Message::Disconnected,
         )
     }
@@ -2113,6 +2130,117 @@ mod tests {
         let _ = handler.update(Message::Connected(Err(failure)));
 
         assert_eq!(diagnosed_holders(&handler), ["Preview"]);
+    }
+
+    // ---- service code that panics: the panel is never left waiting ----
+
+    /// A phone service that works, except for the one call that panics.
+    fn panicking_in(call: &'static str) -> Arc<FakeDevice> {
+        Arc::new(FakeDevice {
+            panics_in: Some(call),
+            phones: vec![
+                crate::handler::testing::plugged("ABC123", "Pixel 9"),
+                crate::handler::testing::plugged("S24", "Galaxy S24"),
+            ],
+            ..FakeDevice::with_storages(vec![storage(1, "Internal")])
+        })
+    }
+
+    fn says_crashed(handler: &Handler) -> bool {
+        matches!(
+            &handler.state,
+            State::Failed(failed)
+                if failed.error.title == "Something went wrong inside the app"
+                    && !failed.error.device_lost
+        )
+    }
+
+    #[tokio::test]
+    async fn a_connect_that_panics_is_a_failure_the_panel_shows_not_a_wait_for_ever() {
+        let mut handler = Handler::new(panicking_in("connect"));
+
+        settle(&mut handler, Message::Request(Request::Connect)).await;
+
+        assert!(says_crashed(&handler), "not left on Connecting…");
+    }
+
+    #[tokio::test]
+    async fn a_switch_that_panics_ends_as_a_failure_not_an_endless_opening() {
+        let mut handler = Handler::new(panicking_in("connect"));
+        settle(&mut handler, connected(&[storage(1, "Internal")])).await;
+
+        settle(&mut handler, open_request("S24")).await;
+
+        assert!(says_crashed(&handler), "not left on Opening…");
+    }
+
+    #[tokio::test]
+    async fn quitting_the_holders_when_that_panics_still_connects() {
+        let mut handler = Handler::new(panicking_in("release"));
+        let _ = handler.update(Message::Connected(Err(Failure {
+            choose: false,
+            error: error::to_error_response(dto::Error::DeviceInUse),
+            diagnosis: Some(Box::new(Diagnosed {
+                response: DiagnosisResponse::default(),
+                source: dto::Diagnosis::default(),
+                holders: vec![holder("Photos", false)],
+            })),
+        })));
+
+        settle(&mut handler, Message::Request(Request::QuitHolders)).await;
+
+        assert!(handler.is_connected(), "not left on Connecting…");
+    }
+
+    #[tokio::test]
+    async fn a_storage_reload_that_panics_does_not_close_the_open_phone() {
+        let mut handler = Handler::new(panicking_in("storages"));
+        settle(&mut handler, connected(&[storage(1, "Internal")])).await;
+
+        let task = handler.reload_storages();
+        settle_task(&mut handler, task).await;
+
+        assert!(handler.is_connected(), "a bug is not a lost phone");
+    }
+
+    #[tokio::test]
+    async fn a_battery_question_that_panics_does_not_close_the_open_phone() {
+        let mut handler = Handler::new(panicking_in("battery"));
+        settle(&mut handler, connected(&[storage(1, "Internal")])).await;
+
+        let task = handler.reload_storages();
+        settle_task(&mut handler, task).await;
+
+        assert!(handler.is_connected(), "a bug is not a lost phone");
+    }
+
+    #[tokio::test]
+    async fn a_places_lookup_that_panics_leaves_the_open_phone_without_places_only() {
+        let mut handler = Handler::new(panicking_in("folders_present"));
+
+        settle(&mut handler, connected(&[storage(1, "Internal")])).await;
+
+        assert!(handler.is_connected());
+    }
+
+    #[tokio::test]
+    async fn a_phone_list_that_panics_is_an_empty_list() {
+        let mut handler = Handler::new(panicking_in("phones"));
+
+        settle(&mut handler, connected(&[storage(1, "Internal")])).await;
+
+        assert!(handler.is_connected());
+        assert!(handler.phones.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_that_panics_still_leaves_the_panel_idle() {
+        let mut handler = Handler::new(panicking_in("disconnect"));
+        settle(&mut handler, connected(&[storage(1, "Internal")])).await;
+
+        settle(&mut handler, Message::Request(Request::Disconnect)).await;
+
+        assert!(matches!(handler.state, State::Idle));
     }
 
     #[tokio::test]

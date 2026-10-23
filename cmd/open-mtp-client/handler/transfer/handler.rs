@@ -11,6 +11,7 @@ use super::mapper;
 use super::request::Request;
 use super::response::{ProgressResponse, SummaryResponse};
 use crate::handler::error::{self, ErrorResponse};
+use crate::handler::guard::{self, guarded};
 use crate::i18n::{count, t, tf};
 
 /// Called by the service after every chunk.
@@ -731,13 +732,14 @@ impl Handler {
     pub fn edit(&mut self, request: dto::EditRequest) -> Task<Message> {
         self.edit_note = None;
         let service = Arc::clone(&self.service);
-        Task::perform(
+        guard::perform(
             async move {
                 service
                     .edit_on_mac(request)
                     .await
                     .map_err(error::to_error_response)
             },
+            || Err(guard::crashed()),
             Message::Edited,
         )
     }
@@ -745,8 +747,9 @@ impl Handler {
     /// Reads the working copies kept from before (at start-up).
     pub fn load_edits(&self) -> Task<Message> {
         let service = Arc::clone(&self.service);
-        Task::perform(
+        guard::perform(
             async move { service.working_copies().await },
+            Vec::new,
             Message::EditsLoaded,
         )
     }
@@ -1001,7 +1004,9 @@ impl Handler {
             Job::Download(request, mode, _) => {
                 let (request, mode) = (request.clone(), *mode);
                 let cancel = self.begin(job);
-                Task::run(
+                // `download_events` catches a panic itself and ends with
+                // `Finished(Err(Crashed))`.
+                guard::run_unguarded(
                     download_events(Arc::clone(&self.service), cancel, mode, request),
                     |message| message,
                 )
@@ -1066,15 +1071,21 @@ impl Handler {
                     stage: Stage::Checking,
                 });
                 let service = Arc::clone(&self.service);
-                Task::perform(
+                let asked = request.clone();
+                guard::perform(
                     async move {
-                        let result = service
-                            .existing(request.clone())
+                        service
+                            .existing(request)
                             .await
-                            .map_err(error::to_error_response);
-                        (request, result)
+                            .map_err(error::to_error_response)
                     },
-                    |(request, result)| Message::Checked { request, result },
+                    // Nothing else would end "Checking…", and the queue waits
+                    // behind it.
+                    || Err(guard::crashed()),
+                    move |result| Message::Checked {
+                        request: asked,
+                        result,
+                    },
                 )
             }
         }
@@ -1097,7 +1108,9 @@ impl Handler {
                 pausing: false,
             },
         });
-        Task::run(
+        // `transfer_events` catches a panic itself and ends with
+        // `Finished(Err(Crashed))`.
+        guard::run_unguarded(
             transfer_events(Arc::clone(&self.service), cancel, transfer),
             |message| message,
         )
@@ -1269,12 +1282,14 @@ impl Handler {
                     return Task::none();
                 }
                 let service = Arc::clone(&self.service);
-                Task::perform(
+                guard::perform(
                     async move {
                         ids.into_iter()
                             .zip(service.copy_states(paths).await)
                             .collect()
                     },
+                    // Nothing is known: every row is kept.
+                    Vec::new,
                     Message::EditsChecked,
                 )
             }
@@ -1455,9 +1470,15 @@ impl Handler {
                 };
                 let text = mapper::report_tsv(&summary.report, summary.report_left_out);
                 let service = Arc::clone(&self.service);
-                Task::perform(
-                    async move { service.save_report(folder, text).await },
-                    |result| Message::ReportSaved(result.map_err(error::to_error_response)),
+                guard::perform(
+                    async move {
+                        service
+                            .save_report(folder, text)
+                            .await
+                            .map_err(error::to_error_response)
+                    },
+                    || Err(guard::crashed()),
+                    Message::ReportSaved,
                 )
             }
             Request::CopyReport => {
@@ -1500,15 +1521,15 @@ impl Handler {
                     return Task::none();
                 };
                 let (service, copy) = (Arc::clone(&self.service), edit.copy.clone());
-                Task::perform(
+                guard::perform(
                     async move {
-                        let result = service
+                        service
                             .discard_edit(copy)
                             .await
-                            .map_err(error::to_error_response);
-                        (id, result)
+                            .map_err(error::to_error_response)
                     },
-                    |(id, result)| Message::EditDiscarded(id, result),
+                    || Err(guard::crashed()),
+                    move |result| Message::EditDiscarded(id, result),
                 )
             }
             Request::Clear => {
@@ -1849,16 +1870,6 @@ fn summarize(
         timing: mapper::timing_line(summary, link),
         ..response
     }
-}
-
-async fn guarded<T>(
-    work: impl std::future::Future<Output = Result<T, dto::Error>>,
-) -> Result<T, dto::Error> {
-    use iced::futures::FutureExt;
-    std::panic::AssertUnwindSafe(work)
-        .catch_unwind()
-        .await
-        .unwrap_or(Err(dto::Error::Crashed))
 }
 
 /// Runs one transfer, turning its progress callbacks into messages and
@@ -3051,19 +3062,6 @@ mod tests {
         .await;
 
         assert!(matches!(messages.last(), Some(Message::Finished(Ok(done))) if done.files == 1));
-    }
-
-    #[tokio::test]
-    async fn the_guard_hands_back_what_the_work_answered() {
-        assert_eq!(guarded(async { Ok::<_, dto::Error>(7) }).await, Ok(7));
-        assert_eq!(
-            guarded(async { Err::<u8, _>(dto::Error::Cancelled) }).await,
-            Err(dto::Error::Cancelled)
-        );
-        assert_eq!(
-            guarded(async { panic!("broke") as Result<u8, dto::Error> }).await,
-            Err(dto::Error::Crashed)
-        );
     }
 
     #[tokio::test]
@@ -5685,7 +5683,11 @@ mod tests {
 
     /// A finished download of `files` photos, each with its report line.
     fn reported_download(files: usize) -> (Handler, Arc<FakeTransfer>) {
-        let (mut handler, service) = handler_with(FakeTransfer::new(Ok(summary())));
+        reported_download_on(FakeTransfer::new(Ok(summary())), files)
+    }
+
+    fn reported_download_on(fake: FakeTransfer, files: usize) -> (Handler, Arc<FakeTransfer>) {
+        let (mut handler, service) = handler_with(fake);
         let _ = handler.download(download_request());
         let report = (0..files)
             .map(|i| dto::FileReport {
@@ -5739,6 +5741,118 @@ mod tests {
         let _ = iced_test::simulator(handler.view());
         let took = started.elapsed();
         assert!(took < Duration::from_millis(500), "{took:?}");
+    }
+
+    // ---- service code that panics: the panel is never left waiting ----
+
+    #[tokio::test]
+    async fn an_upload_whose_check_panics_fails_and_frees_the_queue() {
+        let (mut handler, _) = handler_with(FakeTransfer {
+            panics_in: Some("existing"),
+            ..FakeTransfer::new(Ok(summary()))
+        });
+
+        let task = handler.upload(upload_request());
+        assert!(handler.is_busy(), "checking what the phone has");
+        for message in crate::handler::testing::drain(task).await.0 {
+            let _ = handler.update(message);
+        }
+
+        assert!(
+            !handler.is_busy(),
+            "not left on Checking… with the queue held"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fetch_to_edit_that_panics_says_it_could_not_open_it() {
+        let (mut handler, _) = handler_with(FakeTransfer {
+            panics_in: Some("edit_on_mac"),
+            ..FakeTransfer::new(Ok(summary()))
+        });
+
+        let task = handler.edit(dto::EditRequest {
+            phone: "ABC123".into(),
+            storage_id: 5,
+            folder: "/Documents".into(),
+            name: "notes.txt".into(),
+        });
+        for message in crate::handler::testing::drain(task).await.0 {
+            let _ = handler.update(message);
+        }
+
+        assert!(handler.edit_note.is_some(), "the panel says what happened");
+        assert!(!handler.has_edits());
+    }
+
+    #[tokio::test]
+    async fn working_copies_that_cannot_be_read_at_start_up_are_just_none() {
+        let (mut handler, _) = handler_with(FakeTransfer {
+            panics_in: Some("working_copies"),
+            copies: vec![working_copy()],
+            ..FakeTransfer::new(Ok(summary()))
+        });
+
+        for message in crate::handler::testing::drain(handler.load_edits()).await.0 {
+            let _ = handler.update(message);
+        }
+
+        assert!(!handler.has_edits());
+    }
+
+    #[tokio::test]
+    async fn a_look_at_the_working_copies_that_panics_keeps_every_row() {
+        let (mut handler, _) = editing(FakeTransfer {
+            panics_in: Some("copy_states"),
+            ..FakeTransfer::new(Ok(summary()))
+        })
+        .await;
+
+        let task = handler.update(Message::CheckEdits);
+        for message in crate::handler::testing::drain(task).await.0 {
+            let _ = handler.update(message);
+        }
+
+        assert!(handler.has_edits(), "a row is kept when nothing is known");
+    }
+
+    #[tokio::test]
+    async fn discarding_an_edit_that_panics_says_it_could_not() {
+        let (mut handler, _) = editing(FakeTransfer {
+            panics_in: Some("discard_edit"),
+            ..FakeTransfer::new(Ok(summary()))
+        })
+        .await;
+
+        let task = handler.update(Message::Request(Request::DiscardEdit("c0ffee".into())));
+        for message in crate::handler::testing::drain(task).await.0 {
+            let _ = handler.update(message);
+        }
+
+        assert!(handler.has_edits(), "the copy is still there");
+        assert!(handler.edit_note.is_some(), "and the panel says why");
+    }
+
+    #[tokio::test]
+    async fn saving_a_report_that_panics_says_it_was_not_saved() {
+        let (mut handler, _) = reported_download_on(
+            FakeTransfer {
+                panics_in: Some("save_report"),
+                ..FakeTransfer::new(Ok(summary()))
+            },
+            2,
+        );
+        request(&mut handler, Request::Details(0));
+
+        let saved = handler.update(Message::Request(Request::SaveReport));
+        for message in crate::handler::testing::drain(saved).await.0 {
+            let _ = handler.update(message);
+        }
+
+        assert!(
+            handler.report_note.is_some(),
+            "the panel says what happened"
+        );
     }
 
     #[tokio::test]

@@ -627,15 +627,15 @@ async fn moving_a_few_files_out_of_a_big_folder_does_not_read_it_again() {
         5_000
     );
     let reads = s.explorer.full_reads();
+    let heard = s.transfer.device.activity().times_heard();
 
-    let started = std::time::Instant::now();
     let summary = s
         .moved(
             "/DCIM/Big",
             &["IMG_00001.jpg", "IMG_00002.jpg", "IMG_00003.jpg"],
         )
         .await;
-    let took = started.elapsed();
+    let asks = s.transfer.device.activity().times_heard() - heard;
     let after = s.explorer.list(s.storage, "/DCIM/Big", true).await.unwrap();
 
     assert_eq!(removal(&summary).removed, 3);
@@ -645,10 +645,11 @@ async fn moving_a_few_files_out_of_a_big_folder_does_not_read_it_again() {
         reads,
         "the 5,000 files were not described again"
     );
-    // The virtual phone answers "how many items" by reading the directory
-    // (about 0.3 s at this size in a release build), and a move asks once; a
-    // round trip per file would take minutes.
-    assert!(took < Duration::from_secs(20), "{took:?}");
+    // The phone answered about twenty-five times, to find the three files and
+    // check them, never once per file of the 5,000. A move that costs a round
+    // trip per file would be 5,000 or more. (Counted, not timed: a stopwatch
+    // here only measured how slow the machine was.)
+    assert!(asks < 500, "{asks} answers from the phone for three files");
 }
 
 #[tokio::test]
