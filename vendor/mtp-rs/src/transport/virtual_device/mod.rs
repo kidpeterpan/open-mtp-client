@@ -43,6 +43,7 @@
 mod builders;
 pub mod config;
 mod handlers;
+mod prop_list;
 pub mod registry;
 mod state;
 mod watcher;
@@ -2587,6 +2588,263 @@ mod tests {
         assert_eq!(
             movie.size, REAL_SIZE,
             "full u64 size should be resolved for files >4 GB"
+        );
+    }
+
+    // -- GetObjectPropList listings vs per-handle listings -------------------------
+
+    /// Nested folders, empty folders, a few formats, and fixed dates.
+    fn listing_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for folder in ["DCIM/Camera", "DCIM/Empty", "Music", "Docs"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        let files = [
+            ("top.txt", &b"top"[..]),
+            ("DCIM/Camera/IMG_0001.jpg", b"jpeg one"),
+            ("DCIM/Camera/IMG_0002.jpg", b"jpeg number two"),
+            ("DCIM/Camera/clip.mp4", b"not really a video"),
+            ("Music/song.mp3", b"la la la"),
+        ];
+        for (i, (rel, bytes)) in files.into_iter().enumerate() {
+            let path = root.join(rel);
+            std::fs::write(&path, bytes).unwrap();
+            set_mtime(&path, 1_710_513_022 + 3_600 * i as i64);
+        }
+        dir
+    }
+
+    async fn open_listing_device(
+        dir: &std::path::Path,
+        serial: &str,
+        use_prop_list: bool,
+        tweak: impl FnOnce(&mut VirtualDeviceConfig),
+    ) -> MtpDevice {
+        let mut config = VirtualDeviceConfig {
+            utc_offset: offset(120),
+            ..test_config_with_serial(dir, serial)
+        };
+        tweak(&mut config);
+        MtpDevice::builder()
+            .use_object_prop_list(use_prop_list)
+            .open_virtual(config)
+            .await
+            .unwrap()
+    }
+
+    /// Every object on the first storage, by path, listing each folder on its own.
+    async fn walk(device: &MtpDevice) -> Vec<(String, crate::mtp::ObjectInfo)> {
+        let storage = device.storages().await.unwrap().remove(0);
+        let mut out = Vec::new();
+        let mut folders = vec![(None, String::new())];
+        while let Some((parent, prefix)) = folders.pop() {
+            for object in storage.list_objects(parent).await.unwrap() {
+                let path = format!("{prefix}/{}", object.filename);
+                if object.is_folder() {
+                    folders.push((Some(object.handle), path.clone()));
+                }
+                out.push((path, object));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Assert two walks list the same objects with the same fields.
+    fn assert_same_listing(
+        expected: &[(String, crate::mtp::ObjectInfo)],
+        got: &[(String, crate::mtp::ObjectInfo)],
+        label: &str,
+    ) {
+        let paths = |walk: &[(String, crate::mtp::ObjectInfo)]| {
+            walk.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(paths(expected), paths(got), "{label}: different objects");
+        for ((path, e), (_, g)) in expected.iter().zip(got) {
+            assert_eq!(e.handle, g.handle, "{label}: {path} handle");
+            assert_eq!(e.storage_id, g.storage_id, "{label}: {path} storage");
+            assert_eq!(e.parent, g.parent, "{label}: {path} parent");
+            assert_eq!(e.filename, g.filename, "{label}: {path} name");
+            assert_eq!(e.size, g.size, "{label}: {path} size");
+            assert_eq!(e.format, g.format, "{label}: {path} format");
+            assert_eq!(e.is_folder(), g.is_folder(), "{label}: {path} folder");
+            assert_eq!(e.modified, g.modified, "{label}: {path} modified");
+            assert_eq!(e.created, g.created, "{label}: {path} created");
+            assert_eq!(e.image_width, g.image_width, "{label}: {path} width");
+            assert_eq!(e.image_height, g.image_height, "{label}: {path} height");
+        }
+    }
+
+    fn prop_list_requests(serial: &str) -> u32 {
+        super::registry::operation_count(serial, OperationCode::GetObjectPropList).unwrap()
+    }
+
+    fn object_info_requests(serial: &str) -> u32 {
+        super::registry::operation_count(serial, OperationCode::GetObjectInfo).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_folder_listing_uses_get_object_prop_list_unless_turned_off() {
+        let dir = listing_tree();
+        let camera_files = 3;
+
+        for (use_prop_list, serial) in [(true, "prop-list-on"), (false, "prop-list-off")] {
+            let device = open_listing_device(dir.path(), serial, use_prop_list, |_| {}).await;
+            let storage = device.storages().await.unwrap().remove(0);
+            let dcim = storage.list_objects(None).await.unwrap();
+            let dcim = dcim.iter().find(|o| o.filename == "DCIM").unwrap().handle;
+            let camera = storage.list_objects(Some(dcim)).await.unwrap();
+            let camera = camera
+                .iter()
+                .find(|o| o.filename == "Camera")
+                .unwrap()
+                .handle;
+
+            let (prop_lists, infos) = (prop_list_requests(serial), object_info_requests(serial));
+            let listed = storage.list_objects(Some(camera)).await.unwrap();
+            assert_eq!(listed.len(), camera_files);
+            let prop_lists = prop_list_requests(serial) - prop_lists;
+            let infos = object_info_requests(serial) - infos;
+            if use_prop_list {
+                // One request per property: the required four, then the two dates.
+                assert_eq!((prop_lists, infos), (6, 0), "no GetObjectInfo");
+            } else {
+                assert_eq!((prop_lists, infos), (0, 3), "one GetObjectInfo per child");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn both_listing_paths_agree_field_by_field() {
+        let dir = listing_tree();
+        let off = open_listing_device(dir.path(), "agree-off", false, |_| {}).await;
+        let per_handle = walk(&off).await;
+        assert_eq!(per_handle.len(), 10, "the whole tree");
+        assert!(per_handle
+            .iter()
+            .all(|(_, o)| o.modified.is_some() && o.created.is_some()));
+
+        let device = open_listing_device(dir.path(), "agree-on", true, |_| {}).await;
+        assert_same_listing(&per_handle, &walk(&device).await, "per property");
+        assert!(prop_list_requests("agree-on") > 0);
+
+        // The device itself not advertising the operation is the same as turning it off.
+        let device = open_listing_device(dir.path(), "agree-unadvertised", true, |c| {
+            c.supports_object_prop_list = false;
+        })
+        .await;
+        assert_same_listing(&per_handle, &walk(&device).await, "unadvertised");
+        assert_eq!(prop_list_requests("agree-unadvertised"), 0);
+    }
+
+    #[tokio::test]
+    async fn a_declined_required_property_lists_per_handle() {
+        let dir = listing_tree();
+        let per_handle =
+            walk(&open_listing_device(dir.path(), "decl-req-off", false, |_| {}).await).await;
+
+        let serial = "decl-req-on";
+        let device = open_listing_device(dir.path(), serial, true, |c| {
+            c.prop_list_declined_properties = vec![crate::ptp::ObjectPropertyCode::ObjectFormat];
+        })
+        .await;
+        assert_same_listing(&per_handle, &walk(&device).await, "required declined");
+
+        // Once the device has shown it can't serve a listing, it isn't asked again.
+        let storage = device.storages().await.unwrap().remove(0);
+        let music = storage.list_objects(None).await.unwrap();
+        let music = music.iter().find(|o| o.filename == "Music").unwrap().handle;
+        let before = prop_list_requests(serial);
+        storage.list_objects(Some(music)).await.unwrap();
+        assert_eq!(prop_list_requests(serial), before);
+    }
+
+    #[tokio::test]
+    async fn a_stale_folder_handle_does_not_turn_the_fast_path_off() {
+        let dir = listing_tree();
+        let serial = "prop-list-rekey";
+        let device = open_listing_device(dir.path(), serial, true, |_| {}).await;
+        let storage = device.storages().await.unwrap().remove(0);
+        let find = |objects: Vec<crate::mtp::ObjectInfo>, name: &str| {
+            objects
+                .into_iter()
+                .find(|o| o.filename == name)
+                .unwrap()
+                .handle
+        };
+        let dcim = find(storage.list_objects(None).await.unwrap(), "DCIM");
+        let stale = find(storage.list_objects(Some(dcim)).await.unwrap(), "Camera");
+
+        // Android re-keys handles after a media rescan: the cached handle is now unknown.
+        super::registry::rekey_virtual_object(serial, std::path::Path::new("DCIM/Camera")).unwrap();
+        // A stale handle must fail, never read as an empty folder.
+        let listed = storage.list_objects(Some(stale)).await;
+        assert!(
+            matches!(listed, Err(Error::StaleHandle)),
+            "expected StaleHandle, got {listed:?}"
+        );
+
+        // Re-listing the parent finds the new handle, and that listing still takes the
+        // prop-list path: six per-property requests, no GetObjectInfo.
+        let fresh = find(storage.list_objects(Some(dcim)).await.unwrap(), "Camera");
+        assert_ne!(fresh, stale);
+        let (prop_lists, infos) = (prop_list_requests(serial), object_info_requests(serial));
+        assert_eq!(storage.list_objects(Some(fresh)).await.unwrap().len(), 3);
+        assert_eq!(
+            (
+                prop_list_requests(serial) - prop_lists,
+                object_info_requests(serial) - infos
+            ),
+            (6, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_undescribable_object_in_a_folder_is_skipped_on_the_prop_list_path_too() {
+        let dir = listing_tree();
+        let serial = "prop-list-22";
+        let device = open_listing_device(dir.path(), serial, true, |c| {
+            c.undescribable_objects = vec!["DCIM/Camera/IMG_0002.jpg".into()];
+        })
+        .await;
+        let storage = device.storages().await.unwrap().remove(0);
+        let dcim = storage.list_objects(None).await.unwrap();
+        let dcim = dcim.iter().find(|o| o.filename == "DCIM").unwrap().handle;
+        let camera = storage.list_objects(Some(dcim)).await.unwrap();
+        let camera = camera
+            .iter()
+            .find(|o| o.filename == "Camera")
+            .unwrap()
+            .handle;
+
+        let before = prop_list_requests(serial);
+        let collection = storage.collect_objects(Some(camera)).await.unwrap();
+        assert!(
+            prop_list_requests(serial) > before,
+            "the prop-list path was tried first"
+        );
+        let mut names: Vec<_> = collection
+            .objects
+            .iter()
+            .map(|o| o.filename.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["IMG_0001.jpg", "clip.mp4"]);
+        assert_eq!(collection.skipped.len(), 1);
+
+        // One bad folder doesn't turn the fast path off for the others.
+        let music = storage.list_objects(None).await.unwrap();
+        let music = music.iter().find(|o| o.filename == "Music").unwrap().handle;
+        let (prop_lists, infos) = (prop_list_requests(serial), object_info_requests(serial));
+        assert_eq!(storage.list_objects(Some(music)).await.unwrap().len(), 1);
+        assert_eq!(
+            (
+                prop_list_requests(serial) - prop_lists,
+                object_info_requests(serial) - infos
+            ),
+            (6, 0),
+            "one request per property, no GetObjectInfo"
         );
     }
 }

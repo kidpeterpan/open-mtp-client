@@ -3,7 +3,7 @@
 //!
 //! [`MtpBackend`] is the one abstraction every concrete portable-device backend implements in
 //! backend-neutral vocabulary (neutral [`crate::mtp`] types and [`crate::mtp::Error`]). The
-//! implementations are the PTP-over-USB backend ([`UsbBackend`]) and, on Windows, the WPD-over-COM
+//! implementations are the PTP-over-USB backend ([`UsbBackend`](usb::UsbBackend)) and, on Windows, the WPD-over-COM
 //! backend (`wpd::WpdBackend`). [`crate::mtp::MtpDevice`] and
 //! [`crate::mtp::Storage`] are thin concrete façades over a `Box<dyn MtpBackend>`, so consumers
 //! never see the trait or generics.

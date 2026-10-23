@@ -1,6 +1,6 @@
 //! Internal diagnostic-logging shim.
 //!
-//! [`diag_debug!`] and [`diag_trace!`] emit `tracing` events when the `tracing`
+//! `diag_debug!` and `diag_trace!` emit `tracing` events when the `tracing`
 //! feature is enabled, and compile to nothing otherwise while still borrowing
 //! their arguments (so they never trip an unused-variable warning in the default,
 //! dependency-free build). Use plain format-string syntax:

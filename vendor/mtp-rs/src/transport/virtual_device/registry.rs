@@ -421,6 +421,23 @@ pub fn force_object_info_error(
     true
 }
 
+/// How many times the device with this serial was sent `op`, or `None` if no
+/// active device has the serial. Lets a test tell which path a host took.
+#[cfg(test)]
+pub(crate) fn operation_count(serial: &str, op: crate::ptp::OperationCode) -> Option<u32> {
+    let active = active_states().lock().unwrap();
+    let state_arc = Arc::clone(&active.iter().find(|(s, _)| s == serial)?.1);
+    drop(active); // Release the registry lock before acquiring the state lock.
+    let count = state_arc
+        .lock()
+        .unwrap()
+        .operation_counts
+        .get(&op.into())
+        .copied()
+        .unwrap_or(0);
+    Some(count)
+}
+
 /// Clear every forced `GetObjectInfo` error on this device, so its objects
 /// describe themselves normally again. Returns `false` if no active device has
 /// the given serial.

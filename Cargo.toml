@@ -12,7 +12,7 @@ repository = "https://github.com/kidpeterpan/open-mtp-client"
 
 [workspace.dependencies]
 internal = { path = "internal", package = "open-mtp-client-internal" }
-mtp-rs = { version = "0.33", features = ["virtual-device"] }
+mtp-rs = { version = "0.34", features = ["virtual-device"] }
 nusb = "0.2"
 libc = "0.2"
 iced = { version = "0.14", features = ["tokio", "image-without-codecs", "advanced"] }
@@ -47,7 +47,7 @@ objc2-user-notifications = { version = "0.2", features = ["block2", "UNNotificat
 [profile.dev]
 split-debuginfo = "off"
 
-# mtp-rs 0.33 has no way to read a device property (battery level) from an
-# open device; vendor/mtp-rs is 0.33.0 with that added (vendor/README.md).
+# mtp-rs 0.34 has no way to read a device property (battery level) from an
+# open device; vendor/mtp-rs is 0.34.0 with that added (vendor/README.md).
 [patch.crates-io]
 mtp-rs = { path = "vendor/mtp-rs" }

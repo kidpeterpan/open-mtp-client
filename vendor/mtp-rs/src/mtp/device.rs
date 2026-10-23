@@ -471,6 +471,7 @@ pub struct MtpDeviceBuilder {
     known_devices: Vec<(u16, u16)>,
     backend: Backend,
     reuse_existing_session_id: Option<u32>,
+    use_object_prop_list: bool,
 }
 
 impl MtpDeviceBuilder {
@@ -481,6 +482,7 @@ impl MtpDeviceBuilder {
             known_devices: Vec::new(),
             backend: Backend::default(),
             reuse_existing_session_id: None,
+            use_object_prop_list: true,
         }
     }
 
@@ -639,6 +641,30 @@ impl MtpDeviceBuilder {
         self
     }
 
+    /// Whether folder listings may use `GetObjectPropList` (default `true`).
+    ///
+    /// On a device that advertises it (modern Android does), listing a folder other than the
+    /// storage root asks for every child's metadata in one request, instead of one
+    /// `GetObjectInfo` per child. On Android that's the difference between seconds and about a
+    /// minute for a 10,000-photo folder, because Android reads each photo's EXIF to answer
+    /// `GetObjectInfo`. A listing falls back to `GetObjectInfo` by itself whenever the device
+    /// declines the request or answers something unusable, so there's normally no reason to
+    /// turn it off.
+    ///
+    /// Pass `false` as a kill switch when a device misbehaves on that path (wrong or missing
+    /// objects in listings that the per-handle path gets right), or to compare the two paths'
+    /// results and timings. Listings then cost one `GetObjectInfo` per child, as on devices
+    /// without the operation. One difference to expect on purpose: listings via
+    /// `GetObjectPropList` leave [`ObjectInfo::image_width`](crate::mtp::ObjectInfo::image_width)
+    /// and `image_height` at 0.
+    ///
+    /// This setting applies only to the USB backend; WPD on Windows ignores it.
+    #[must_use]
+    pub fn use_object_prop_list(mut self, enabled: bool) -> Self {
+        self.use_object_prop_list = enabled;
+        self
+    }
+
     async fn open_ptp_session(
         &self,
         transport: Arc<dyn Transport>,
@@ -775,7 +801,7 @@ impl MtpDeviceBuilder {
             session.set_split_header_data(true);
         }
 
-        let backend = UsbBackend::new(session, device_info);
+        let backend = UsbBackend::new(session, device_info, self.use_object_prop_list);
         Ok(MtpDevice {
             backend: Arc::new(backend),
         })
@@ -900,7 +926,7 @@ impl MtpDeviceBuilder {
         // Get device info
         let device_info = session.get_device_info().await?;
 
-        let backend = UsbBackend::new(session, device_info);
+        let backend = UsbBackend::new(session, device_info, self.use_object_prop_list);
         Ok(MtpDevice {
             backend: Arc::new(backend),
         })

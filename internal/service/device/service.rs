@@ -356,13 +356,14 @@ impl Service {
 
     async fn open(&self, chosen: &Candidate) -> Result<MtpDevice, Error> {
         match chosen {
-            Candidate::Virtual(phone) => MtpDevice::builder()
+            Candidate::Virtual(phone) => builder()
                 .open_virtual(virtual_config(phone.clone()))
                 .await
                 .map_err(|err| service_mapper::to_error(err, false)),
             // By where it is plugged in: unambiguous among the phones just
             // listed, serial number or not.
-            Candidate::Usb(info) => MtpDevice::open_by_location(info.location_id)
+            Candidate::Usb(info) => builder()
+                .open_by_location(info.location_id)
                 .await
                 .map_err(|err| service_mapper::to_error(err, android_file_transfer_running())),
         }
@@ -422,6 +423,17 @@ fn choose<'a>(candidates: &'a [Candidate], prefer: Option<&str>) -> Result<&'a C
         [only] => Ok(only),
         _ => Err(Error::MultipleDevices),
     }
+}
+
+/// How every phone is opened. mtp-rs 0.34 can list a folder with one
+/// GetObjectPropList request instead of a GetObjectInfo for each file, and does
+/// by default, which changes how every phone answers a listing (a file the
+/// phone won't describe, for one, is no longer left out). Off keeps what 0.33
+/// did and what has been tried on real phones;
+/// `one_file_the_phone_will_not_describe_does_not_hide_the_others` pins it.
+/// Turning it on is a change of its own, to be tried on a real phone first.
+fn builder() -> mtp_rs::mtp::MtpDeviceBuilder {
+    MtpDevice::builder().use_object_prop_list(false)
 }
 
 fn virtual_config(phone: VirtualPhone) -> VirtualDeviceConfig {
@@ -501,10 +513,11 @@ mod tests {
                 partial_reads: true,
                 partial_reads_64: true,
                 thumbnails: true,
-                prop_list: false,
+                prop_list: true,
                 events: true,
             },
-            "what the virtual phone lists"
+            "what the virtual phone lists (mtp-rs 0.34's lists GetObjectPropList; \
+             listings still go a file at a time, see `builder`)"
         );
 
         let other = tempfile::tempdir().unwrap();

@@ -4,6 +4,7 @@
 //! - [`DeviceInfo`]: Device capabilities and identification
 //! - [`StorageInfo`]: Storage characteristics and capacity
 //! - [`ObjectInfo`]: File/folder metadata
+//! - [`ObjectPropListElement`]: One property of one object, from a `GetObjectPropList` dataset
 //! - [`DevicePropDesc`]: Device property descriptors
 //! - [`PropertyValue`]: Property values of various types
 
@@ -14,7 +15,7 @@ mod storage;
 
 // Re-export all public types for backward compatibility
 pub use device::{DeviceInfo, StorageInfo};
-pub use objects::ObjectInfo;
+pub use objects::{ObjectInfo, ObjectPropListElement};
 pub use properties::{DevicePropDesc, PropertyFormType, PropertyRange, PropertyValue};
 pub use storage::{
     AccessCapability, AssociationType, FilesystemType, ProtectionStatus, StorageType,

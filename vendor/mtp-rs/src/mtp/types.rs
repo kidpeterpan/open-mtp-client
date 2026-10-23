@@ -334,8 +334,13 @@ pub struct ObjectInfo {
     /// Modification time, if the device reported a valid one.
     pub modified: Option<DateTime>,
     /// Image width in pixels (0 if not an image or unknown).
+    ///
+    /// Folder listings may leave it 0 even for images: over USB, a device that supports
+    /// `GetObjectPropList` is listed with that, which doesn't carry image dimensions. Ask
+    /// [`Storage::get_object_info`](crate::mtp::Storage::get_object_info) for one object's.
     pub image_width: u32,
-    /// Image height in pixels (0 if not an image or unknown).
+    /// Image height in pixels (0 if not an image or unknown). Listings may leave it 0, like
+    /// [`image_width`](Self::image_width).
     pub image_height: u32,
     /// Pre-resolved folder flag (see [`ObjectInfo::is_folder`]).
     pub(crate) folder: bool,
