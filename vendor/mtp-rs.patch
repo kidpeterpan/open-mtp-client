@@ -1,6 +1,6 @@
 diff -ruN a/src/lib.rs b/src/lib.rs
---- a/src/lib.rs	2026-10-18 10:26:17
-+++ b/src/lib.rs	2026-10-18 10:26:17
+--- a/src/lib.rs	2026-10-23 17:08:29
++++ b/src/lib.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
  //! # mtp-rs
@@ -16,8 +16,8 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  #[cfg(feature = "virtual-device")]
  pub use transport::virtual_device::RescanSummary;
 diff -ruN a/src/mtp/backend/mod.rs b/src/mtp/backend/mod.rs
---- a/src/mtp/backend/mod.rs	2026-10-18 10:26:17
-+++ b/src/mtp/backend/mod.rs	2026-10-18 10:26:17
+--- a/src/mtp/backend/mod.rs	2026-10-23 17:08:29
++++ b/src/mtp/backend/mod.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-17): battery level, supported operations (see vendor/README.md).
  //! The backend seam for the high-level [`crate::mtp`] API.
@@ -48,17 +48,17 @@ diff -ruN a/src/mtp/backend/mod.rs b/src/mtp/backend/mod.rs
      /// Create a new object under `parent` on `storage` and stream its data.
      async fn upload(
 diff -ruN a/src/mtp/backend/usb.rs b/src/mtp/backend/usb.rs
---- a/src/mtp/backend/usb.rs	2026-10-18 10:26:17
-+++ b/src/mtp/backend/usb.rs	2026-10-18 10:26:17
+--- a/src/mtp/backend/usb.rs	2026-10-23 17:08:29
++++ b/src/mtp/backend/usb.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-17): battery level, supported operations (see vendor/README.md).
  //! The PTP-over-USB backend: today's [`PtpSession`] logic behind the neutral [`MtpBackend`] trait.
  //!
  //! All device-quirk handling lives here (the root-listing fast path and Android/Samsung/Fuji
-@@ -81,6 +82,12 @@
-     /// ranged/windowed read path (see [`plan_partial_read`]).
-     has_partial_object_64: bool,
-     has_partial_object: bool,
+@@ -94,6 +95,12 @@
+     /// [`PROP_LIST_OPTIONAL`] properties the device declined, as bits by position: not asked
+     /// again this session.
+     prop_list_declined_optional: AtomicU8,
 +    /// The device lists BatteryLevel among its properties and can be asked for one.
 +    has_battery_level: bool,
 +    /// The vendor extension description names "android.com".
@@ -68,10 +68,10 @@ diff -ruN a/src/mtp/backend/usb.rs b/src/mtp/backend/usb.rs
  }
  
  impl UsbBackend {
-@@ -90,12 +97,25 @@
-         let capabilities = Capabilities::from_ptp_device_info(&ptp_info);
-         let has_partial_object_64 = ptp_info.supports_operation(OperationCode::GetPartialObject64);
+@@ -114,6 +121,16 @@
          let has_partial_object = ptp_info.supports_operation(OperationCode::GetPartialObject);
+         let has_object_prop_list =
+             use_object_prop_list && ptp_info.supports_operation(OperationCode::GetObjectPropList);
 +        let has_battery_level = ptp_info.supports_operation(OperationCode::GetDevicePropValue)
 +            && ptp_info
 +                .device_properties_supported
@@ -85,16 +85,17 @@ diff -ruN a/src/mtp/backend/usb.rs b/src/mtp/backend/usb.rs
          Self {
              session,
              device_info,
-             capabilities,
-             has_partial_object_64,
-             has_partial_object,
+@@ -123,6 +140,9 @@
+             has_object_prop_list,
+             prop_list_off: AtomicBool::new(false),
+             prop_list_declined_optional: AtomicU8::new(0),
 +            has_battery_level,
 +            is_android,
 +            operations,
          }
      }
  
-@@ -299,6 +319,26 @@
+@@ -642,6 +662,26 @@
              storages.push(neutral);
          }
          Ok(storages)
@@ -122,8 +123,8 @@ diff -ruN a/src/mtp/backend/usb.rs b/src/mtp/backend/usb.rs
  
      async fn storage_info(&self, storage: StorageId) -> Result<StorageInfo, Error> {
 diff -ruN a/src/mtp/device.rs b/src/mtp/device.rs
---- a/src/mtp/device.rs	2026-10-18 10:26:17
-+++ b/src/mtp/device.rs	2026-10-18 10:26:17
+--- a/src/mtp/device.rs	2026-10-23 17:08:29
++++ b/src/mtp/device.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-17): battery level, supported operations (see vendor/README.md).
  //! MtpDevice - the main entry point for MTP operations.
@@ -159,8 +160,8 @@ diff -ruN a/src/mtp/device.rs b/src/mtp/device.rs
  
      /// Whether the device supports renaming objects.
 diff -ruN a/src/ptp/container.rs b/src/ptp/container.rs
---- a/src/ptp/container.rs	2026-10-18 10:26:17
-+++ b/src/ptp/container.rs	2026-10-18 10:26:17
+--- a/src/ptp/container.rs	2026-10-23 17:08:29
++++ b/src/ptp/container.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-18): a response shorter than its header is an error (see vendor/README.md).
  //! MTP/PTP USB container format.
@@ -243,8 +244,8 @@ diff -ruN a/src/ptp/container.rs b/src/ptp/container.rs
  
      // --- EventContainer tests ---
 diff -ruN a/src/ptp/device.rs b/src/ptp/device.rs
---- a/src/ptp/device.rs	2026-10-18 10:26:17
-+++ b/src/ptp/device.rs	2026-10-18 10:26:17
+--- a/src/ptp/device.rs	2026-10-23 17:08:29
++++ b/src/ptp/device.rs	2026-10-23 17:08:29
 @@ -1,14 +1,20 @@
 +// Modified by open-mtp-client (2026-10-18): the reply is bounded (see vendor/README.md).
  //! Low-level PTP device API.
@@ -321,8 +322,8 @@ diff -ruN a/src/ptp/device.rs b/src/ptp/device.rs
      #[tokio::test]
      #[ignore] // Requires real device
 diff -ruN a/src/ptp/pack/mod.rs b/src/ptp/pack/mod.rs
---- a/src/ptp/pack/mod.rs	2026-10-18 10:26:17
-+++ b/src/ptp/pack/mod.rs	2026-10-18 10:26:17
+--- a/src/ptp/pack/mod.rs	2026-10-23 17:08:29
++++ b/src/ptp/pack/mod.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-18): a lone surrogate is U+FFFD, not an error (see vendor/README.md).
  //! Binary serialization/deserialization primitives for MTP/PTP.
@@ -365,8 +366,8 @@ diff -ruN a/src/ptp/pack/mod.rs b/src/ptp/pack/mod.rs
  
      #[test]
 diff -ruN a/src/ptp/session/mod.rs b/src/ptp/session/mod.rs
---- a/src/ptp/session/mod.rs	2026-10-18 10:26:17
-+++ b/src/ptp/session/mod.rs	2026-10-18 10:26:17
+--- a/src/ptp/session/mod.rs	2026-10-23 17:08:29
++++ b/src/ptp/session/mod.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-18): buffered replies are bounded (see vendor/README.md).
  //! PTP session management.
@@ -502,8 +503,8 @@ diff -ruN a/src/ptp/session/mod.rs b/src/ptp/session/mod.rs
  
      /// Dropping an operation's future after it sent its command but before it
 diff -ruN a/src/ptp/session/streaming.rs b/src/ptp/session/streaming.rs
---- a/src/ptp/session/streaming.rs	2026-10-18 10:26:17
-+++ b/src/ptp/session/streaming.rs	2026-10-18 10:26:17
+--- a/src/ptp/session/streaming.rs	2026-10-23 17:08:29
++++ b/src/ptp/session/streaming.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-18): empty reads in a row are bounded (see vendor/README.md).
  //! Streaming transfer operations.
@@ -592,8 +593,8 @@ diff -ruN a/src/ptp/session/streaming.rs b/src/ptp/session/streaming.rs
  
      #[tokio::test]
 diff -ruN a/src/transport/virtual_device/builders.rs b/src/transport/virtual_device/builders.rs
---- a/src/transport/virtual_device/builders.rs	2026-10-18 10:26:17
-+++ b/src/transport/virtual_device/builders.rs	2026-10-18 10:26:17
+--- a/src/transport/virtual_device/builders.rs	2026-10-23 17:08:29
++++ b/src/transport/virtual_device/builders.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
  //! Binary payload builders for virtual device responses.
@@ -614,9 +615,9 @@ diff -ruN a/src/transport/virtual_device/builders.rs b/src/transport/virtual_dev
      // FunctionalMode: 0 (standard)
      buf.extend_from_slice(&pack_u16(0));
  
-@@ -52,6 +57,9 @@
-     if state.config.supports_rename {
-         ops.push(OperationCode::SetObjectPropValue.into());
+@@ -55,6 +60,9 @@
+     if state.config.supports_object_prop_list {
+         ops.push(OperationCode::GetObjectPropList.into());
      }
 +    if state.config.battery_level.is_some() {
 +        ops.push(OperationCode::GetDevicePropValue.into());
@@ -624,7 +625,7 @@ diff -ruN a/src/transport/virtual_device/builders.rs b/src/transport/virtual_dev
      buf.extend_from_slice(&pack_u16_array(&ops));
  
      // EventsSupported
-@@ -62,8 +70,12 @@
+@@ -65,8 +73,12 @@
      ];
      buf.extend_from_slice(&pack_u16_array(&events));
  
@@ -640,8 +641,8 @@ diff -ruN a/src/transport/virtual_device/builders.rs b/src/transport/virtual_dev
      buf.extend_from_slice(&pack_u16_array(&[]));
      // PlaybackFormats: common formats
 diff -ruN a/src/transport/virtual_device/config.rs b/src/transport/virtual_device/config.rs
---- a/src/transport/virtual_device/config.rs	2026-10-18 10:26:17
-+++ b/src/transport/virtual_device/config.rs	2026-10-18 10:26:17
+--- a/src/transport/virtual_device/config.rs	2026-10-23 17:08:29
++++ b/src/transport/virtual_device/config.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
  //! Configuration types for virtual MTP devices.
@@ -659,7 +660,7 @@ diff -ruN a/src/transport/virtual_device/config.rs b/src/transport/virtual_devic
      /// Whether the device advertises `GetPartialObject64` (0x95C1), the 64-bit
      /// offset partial read. Real Android devices do; many PTP cameras (e.g. the
      /// Panasonic Lumix DMC-TZ61) only advertise the 32-bit `GetPartialObject`.
-@@ -150,6 +156,8 @@
+@@ -173,6 +179,8 @@
              serial: "virtual-0001".into(),
              storages: Vec::new(),
              supports_rename: true,
@@ -667,16 +668,16 @@ diff -ruN a/src/transport/virtual_device/config.rs b/src/transport/virtual_devic
 +            android: false,
              supports_partial_object_64: true,
              supports_partial_object: true,
-             event_poll_interval: Duration::from_millis(50),
+             supports_object_prop_list: true,
 diff -ruN a/src/transport/virtual_device/handlers.rs b/src/transport/virtual_device/handlers.rs
---- a/src/transport/virtual_device/handlers.rs	2026-10-18 10:26:17
-+++ b/src/transport/virtual_device/handlers.rs	2026-10-18 10:26:17
+--- a/src/transport/virtual_device/handlers.rs	2026-10-23 17:08:29
++++ b/src/transport/virtual_device/handlers.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
  //! Protocol operation handlers for the virtual device.
  //!
  //! Each handler processes an incoming MTP command and queues response (and optionally
-@@ -23,6 +24,7 @@
+@@ -24,6 +25,7 @@
  const INVALID_OBJECT_HANDLE: u16 = 0x2009;
  const STORE_READ_ONLY: u16 = 0x200E;
  const NO_THUMBNAIL: u16 = 0x2010;
@@ -684,8 +685,8 @@ diff -ruN a/src/transport/virtual_device/handlers.rs b/src/transport/virtual_dev
  const SESSION_ALREADY_OPEN: u16 = 0x201E;
  const INVALID_PARENT: u16 = 0x201A;
  
-@@ -80,6 +82,12 @@
-                     handle_get_partial_object_64(state, op_code, tx_id, params)
+@@ -88,6 +90,12 @@
+                     handle_get_object_prop_list(state, op_code, tx_id, params)
                  }
                  OperationCode::GetThumb => handle_get_thumb(state, tx_id, params),
 +                OperationCode::GetDevicePropValue if state.config.battery_level.is_none() => {
@@ -697,7 +698,7 @@ diff -ruN a/src/transport/virtual_device/handlers.rs b/src/transport/virtual_dev
                  OperationCode::SendObjectInfo => {
                      handle_send_object_info(state, tx_id, params, data_payload)
                  }
-@@ -96,6 +104,29 @@
+@@ -104,6 +112,29 @@
                  _ => unsupported(state, tx_id),
              }
          }
@@ -728,14 +729,14 @@ diff -ruN a/src/transport/virtual_device/handlers.rs b/src/transport/virtual_dev
  }
  
 diff -ruN a/src/transport/virtual_device/registry.rs b/src/transport/virtual_device/registry.rs
---- a/src/transport/virtual_device/registry.rs	2026-10-18 10:26:17
-+++ b/src/transport/virtual_device/registry.rs	2026-10-18 10:26:17
+--- a/src/transport/virtual_device/registry.rs	2026-10-23 17:08:29
++++ b/src/transport/virtual_device/registry.rs	2026-10-23 17:08:29
 @@ -1,3 +1,4 @@
 +// Modified by open-mtp-client (2026-10-17): battery level (see vendor/README.md).
  //! Global registry of virtual devices for discovery integration.
  //!
  //! Virtual devices registered here appear in `MtpDevice::list_devices()` and
-@@ -487,6 +488,30 @@
+@@ -504,6 +505,30 @@
      };
      drop(active); // Release the registry lock before acquiring the state lock.
      state_arc.lock().unwrap().pending_operation_wedge = true;

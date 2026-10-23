@@ -1,13 +1,13 @@
 # vendor/mtp-rs
 
-A copy of [mtp-rs](https://github.com/vdavid/mtp-rs) **0.33.0** (MIT OR
+A copy of [mtp-rs](https://github.com/vdavid/mtp-rs) **0.34.0** (MIT OR
 Apache-2.0, by David Veszelovszki), used through `[patch.crates-io]` in the
 workspace `Cargo.toml`. It is not part of the workspace (`exclude = ["vendor"]`),
 so `make lint`, `make test` and `make coverage` leave it alone.
 
 ## Why
 
-mtp-rs 0.33 (the latest release) can read a device property only on its
+mtp-rs 0.34 (the latest release) can read a device property only on its
 low-level `PtpSession`, which an open `MtpDevice` keeps private, so the battery
 level could not be read. `mtp-rs.patch` adds, and nothing else:
 
@@ -19,14 +19,20 @@ level could not be read. `mtp-rs.patch` adds, and nothing else:
 - `MtpDevice::supports_operation(code)`: whether the device lists an operation
   code in its DeviceInfo (no request); `Capabilities` doesn't tell
   GetPartialObject64 from GetPartialObject, or say anything of
-  GetObjectPropList.
+  GetObjectPropList, and the `DeviceInfo` that `MtpDevice::device_info()` gives
+  has no operation list (only the PTP-level one has `supports_operation`).
 - The virtual device: `VirtualDeviceConfig::battery_level` (advertised, and
   answered, only when `Some`) and `android`, and the hook
   `set_virtual_battery_level(serial, level)`, which also queues the
   `DevicePropChanged` event Android sends when its battery changes.
 
 Hardening against a phone that sends bad data (a phone is untrusted input; each
-has a test in the crate, run by `make test-vendor`):
+has a test in the crate, run by `make test-vendor`). None of the four is in
+0.34.0: `ResponseContainer::from_bytes` still computes `length - HEADER_SIZE`
+from the phone's own length, `unpack_string` still turns a lone surrogate into an
+error, and the files that hold all four (`ptp/container.rs`, `ptp/pack/mod.rs`,
+`ptp/session/mod.rs`, `ptp/session/streaming.rs`, `ptp/device.rs`) are the same
+as in 0.33.0:
 
 - `ResponseContainer::from_bytes` refuses a length under the 12-byte header
   (it wrapped, and panicked in `with_capacity`, for a length of 0, 4 or 8).
@@ -44,6 +50,13 @@ Known and left (not reached by this app): `FileDownload::collect` sizes its
 buffer by the phone's size, `collect_objects_recursive` has no visited set, and
 the cancel and reset drains in `transport/nusb.rs` stop only on an idle timeout.
 
+**GetObjectPropList.** 0.34 can list a folder with one GetObjectPropList request
+instead of a GetObjectInfo for each file, and does so by default (its virtual
+phone lists the operation too). The app opens every phone with
+`use_object_prop_list(false)` (`device::service::builder`), so a listing goes a
+file at a time as it did on 0.33, which is what has been tried on real phones.
+Turning it on is its own change.
+
 Every changed file starts with a "Modified by open-mtp-client" line. Besides
 the patch, the `[[example]]` and `[[test]]` sections were removed from
 `Cargo.toml` (`examples/` and `tests/` were not copied).
@@ -51,10 +64,21 @@ the patch, the `[[example]]` and `[[test]]` sections were removed from
 ## Upgrading
 
 1. Copy the new release's `src/`, `Cargo.toml`, `README.md` and both licence
-   files over `vendor/mtp-rs/` (from `~/.cargo/registry/src/*/mtp-rs-<version>`).
+   files over `vendor/mtp-rs/` (from `~/.cargo/registry/src/*/mtp-rs-<version>`;
+   `cargo fetch` in a scratch project that depends on it puts it there, with its
+   checksum checked).
 2. Remove the `[[example]]` and `[[test]]` sections from its `Cargo.toml`.
 3. `cd vendor/mtp-rs && patch -p1 < ../mtp-rs.patch`, and fix what no longer applies.
-4. `make lint test coverage test-vendor`.
+4. Regenerate the patch: `diff -ruN a b` run beside a copy of the release's
+   `src/` named `a/src` and of `vendor/mtp-rs/src` named `b/src`; the result
+   must apply to a pristine release and give `vendor/mtp-rs/src` back.
+5. Change the version of `mtp-rs` in the workspace `Cargo.toml` (and its
+   comment), and let `Cargo.lock` follow.
+6. `make lint test coverage test-vendor`.
+
+0.33.0 to 0.34.0 (2026-10-23): 20 files of `src/` changed upstream, 7 of them
+among the 13 the patch touches, and only the struct and constructor of
+`UsbBackend` (it gained the property-list fields) needed hand work.
 
 If a release adds a way to read the battery, drop this folder and the
 `[patch.crates-io]` lines instead. `mtp-rs.patch` is written to be offered

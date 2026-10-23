@@ -5,16 +5,56 @@
 //! (`GetStringValue`/`GetGuidValue`/`GetUnsignedLargeIntegerValue`) keep us out of raw `PROPVARIANT`
 //! handling, as proven in the Phase 0 spike.
 
-use crate::mtp::{Error, ObjectFormat, ObjectHandle, ObjectInfo, StorageId};
+use crate::mtp::error::map_response_code;
+use crate::mtp::{DateTime, Error, ObjectFormat, ObjectHandle, ObjectInfo, StorageId, UtcOffset};
+use crate::ptp::ResponseCode;
 use std::ffi::c_void;
 
 use windows::core::{Error as WinError, GUID, PWSTR};
 use windows::Win32::Devices::PortableDevices::{
     IPortableDeviceProperties, IPortableDeviceValues, WPD_CONTENT_TYPE_FOLDER,
-    WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT, WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_NAME,
-    WPD_OBJECT_ORIGINAL_FILE_NAME, WPD_OBJECT_SIZE,
+    WPD_CONTENT_TYPE_FUNCTIONAL_OBJECT, WPD_OBJECT_CONTENT_TYPE, WPD_OBJECT_DATE_CREATED,
+    WPD_OBJECT_DATE_MODIFIED, WPD_OBJECT_NAME, WPD_OBJECT_ORIGINAL_FILE_NAME, WPD_OBJECT_SIZE,
 };
+use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
+use windows::Win32::System::Variant::VT_DATE;
+
+/// Days between the OLE automation epoch (1899-12-30) and the Unix epoch (1970-01-01).
+const OLE_TO_UNIX_DAYS: f64 = 25_569.0;
+
+/// Read a WPD date property (`VT_DATE`) as a zoneless [`DateTime`], like the zoneless dates the
+/// USB backend reads from `ObjectInfo`. `None` when the device doesn't report it or it isn't a
+/// `VT_DATE`.
+///
+/// Zoneless is what the hardware shows, not an assumption: the Windows MTP driver hands the
+/// device's wall-clock time through without converting it. On a Xiaomi POCO X7 Pro (Windows 11,
+/// PR #41) `IMG_20260809_190833.jpg` read back as 19:08:33, where a local↔UTC conversion would
+/// have shifted it by the PC's offset. One device so far, so a phone that reports a different
+/// hour from the USB backend is a reason to revisit this.
+///
+/// # Safety
+/// `v` must be a live `IPortableDeviceValues`.
+pub(crate) unsafe fn read_date(v: &IPortableDeviceValues, key: &PROPERTYKEY) -> Option<DateTime> {
+    let mut pv = v.GetValue(key).ok()?;
+    let inner = &pv.Anonymous.Anonymous;
+    let days = (inner.vt == VT_DATE).then(|| inner.Anonymous.date);
+    // A VT_DATE owns nothing, but a device could store any type under the key.
+    let _ = PropVariantClear(&mut pv);
+    ole_date_to_datetime(days?)
+}
+
+/// Convert an OLE automation date (days since 1899-12-30, fraction = time of day) to a zoneless
+/// [`DateTime`]. `None` for 0 (the "no date" value), anything before it, and non-finite input.
+fn ole_date_to_datetime(days: f64) -> Option<DateTime> {
+    if !days.is_finite() || days <= 0.0 {
+        return None;
+    }
+    let secs = ((days - OLE_TO_UNIX_DAYS) * 86_400.0).round() as i64;
+    let d = DateTime::from_unix_seconds(secs, UtcOffset::UTC)?;
+    Some(DateTime { offset: None, ..d })
+}
 
 /// Build a NUL-terminated UTF-16 buffer for a `PCWSTR`/`PWSTR` argument. The returned `Vec` must
 /// outlive the call that borrows its pointer.
@@ -58,6 +98,9 @@ pub(crate) fn map_hresult(e: WinError) -> Error {
     const ERROR_DEVICE_REMOVED: u32 = 1617;
     const ERROR_NOT_SUPPORTED: u32 = 50;
 
+    if let Some(code) = mtp_response_code(e.code().0) {
+        return map_response_code(code);
+    }
     match e.code().0 {
         E_ACCESSDENIED | STG_E_ACCESSDENIED => Error::AccessDenied,
         x if x == win32(ERROR_ACCESS_DENIED) => Error::AccessDenied,
@@ -77,6 +120,22 @@ pub(crate) fn map_hresult(e: WinError) -> Error {
     }
 }
 
+/// The MTP response code inside an `HRESULT`, when Windows passed one through.
+///
+/// The WPD driver hands a device's MTP response back as a `FACILITY_ITF` failure (`0x8004_xxxx`)
+/// with the response code in the low 16 bits: a deleted object's handle on a POCO X7 Pro under
+/// Windows 11 came back as `0x8004_2009`, MTP `InvalidObjectHandle` (#41). Only the MTP
+/// response-code ranges count (`0x2xxx` standard, `0xAxxx` MTP extensions), since other
+/// `FACILITY_ITF` codes are unrelated COM errors (`0x8004_0154` is `REGDB_E_CLASSNOTREG`).
+fn mtp_response_code(hresult: i32) -> Option<ResponseCode> {
+    let hresult = hresult as u32;
+    if hresult & 0xFFFF_0000 != 0x8004_0000 {
+        return None;
+    }
+    let code = (hresult & 0xFFFF) as u16;
+    matches!(code >> 12, 0x2 | 0xA).then(|| ResponseCode::from(code))
+}
+
 /// Whether a WPD content-type GUID denotes a folder (or a storage/functional object, which we also
 /// treat as a directory for traversal).
 pub(crate) fn is_folder_content_type(ctype: &GUID) -> bool {
@@ -90,8 +149,8 @@ pub(crate) fn is_folder_content_type(ctype: &GUID) -> bool {
 /// of a known directory, all are context we already have — cheaper and more reliable than
 /// re-deriving them from each child's properties. The caller interns `wpd_id` into the shared
 /// [`IdMap`](super::ids::IdMap) under its lock and passes the resulting `handle` here, so this
-/// function never touches the (mutex-guarded) map while doing COM I/O. Datetimes are left `None` for
-/// now (lenient; see the plan's "per-device property variance" risk).
+/// function never touches the (mutex-guarded) map while doing COM I/O. Datetimes come from
+/// `WPD_OBJECT_DATE_CREATED`/`_MODIFIED` and are `None` when the device doesn't report them.
 ///
 /// # Safety
 /// `props` must be a live `IPortableDeviceProperties` for the open device.
@@ -105,8 +164,12 @@ pub(crate) unsafe fn read_object_info(
     let id_w = wide(wpd_id);
     let vals = props.GetValues(windows::core::PCWSTR(id_w.as_ptr()), None);
 
-    let (filename, size, folder) = match vals {
+    let (filename, size, folder, created, modified) = match vals {
         Ok(v) => {
+            let (created, modified) = (
+                read_date(&v, &WPD_OBJECT_DATE_CREATED),
+                read_date(&v, &WPD_OBJECT_DATE_MODIFIED),
+            );
             // Prefer the original filesystem name; fall back to the display name.
             let filename = v
                 .GetStringValue(&WPD_OBJECT_ORIGINAL_FILE_NAME)
@@ -128,9 +191,9 @@ pub(crate) unsafe fn read_object_info(
                 v.GetUnsignedLargeIntegerValue(&WPD_OBJECT_SIZE)
                     .unwrap_or(0)
             };
-            (filename, size, folder)
+            (filename, size, folder, created, modified)
         }
-        Err(_) => (String::new(), 0, false),
+        Err(_) => (String::new(), 0, false, None, None),
     };
 
     let format = if folder {
@@ -146,8 +209,8 @@ pub(crate) unsafe fn read_object_info(
         filename,
         size,
         format,
-        created: None,
-        modified: None,
+        created,
+        modified,
         image_width: 0,
         image_height: 0,
         folder,
@@ -164,4 +227,71 @@ pub(crate) unsafe fn set_u32(
     value: u32,
 ) -> Result<(), Error> {
     bag.SetUnsignedIntegerValue(key, value).map_err(map_hresult)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn zoneless(y: u16, mo: u8, d: u8, h: u8, mi: u8, s: u8) -> Option<DateTime> {
+        DateTime::new(y, mo, d, h, mi, s)
+    }
+
+    #[test]
+    fn ole_date_at_the_unix_epoch() {
+        assert_eq!(
+            ole_date_to_datetime(25_569.0),
+            zoneless(1970, 1, 1, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn ole_date_fraction_is_the_time_of_day() {
+        assert_eq!(
+            ole_date_to_datetime(36_585.25),
+            zoneless(2000, 2, 29, 6, 0, 0)
+        );
+    }
+
+    #[test]
+    fn ole_date_rounds_to_the_nearest_second() {
+        // The PR #41 hardware sample: IMG_20260809_190833.jpg. Not exact in f64, so this pins
+        // the rounding too.
+        let days = 46_243.0 + 68_913.0 / 86_400.0;
+        assert_eq!(ole_date_to_datetime(days), zoneless(2026, 8, 9, 19, 8, 33));
+    }
+
+    #[test]
+    fn ole_date_is_zoneless() {
+        assert_eq!(ole_date_to_datetime(46_243.5).unwrap().offset, None);
+    }
+
+    fn hresult(code: u32) -> Error {
+        map_hresult(WinError::from_hresult(windows::core::HRESULT(code as i32)))
+    }
+
+    #[test]
+    fn mtp_response_code_hresults_map_like_the_usb_backend() {
+        // A deleted object's handle on a POCO X7 Pro under Windows 11 (#41): MTP 0x2009
+        // InvalidObjectHandle, wrapped as FACILITY_ITF.
+        assert!(matches!(hresult(0x8004_2009), Error::StaleHandle));
+        assert!(matches!(hresult(0x8004_201A), Error::StaleHandle)); // InvalidParentObject
+        assert!(matches!(hresult(0x8004_2008), Error::NotFound)); // InvalidStorageId
+        assert!(matches!(hresult(0x8004_200C), Error::StorageFull)); // StoreFull
+        assert!(matches!(hresult(0x8004_2019), Error::Busy)); // DeviceBusy
+        assert!(matches!(hresult(0x8004_2005), Error::Unsupported)); // OperationNotSupported
+    }
+
+    #[test]
+    fn other_facility_itf_hresults_stay_other() {
+        // REGDB_E_CLASSNOTREG shares FACILITY_ITF but isn't an MTP response code.
+        assert!(matches!(hresult(0x8004_0154), Error::Other { .. }));
+    }
+
+    #[test]
+    fn ole_date_zero_negative_and_non_finite_are_no_date() {
+        for days in [0.0, -1.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(ole_date_to_datetime(days), None, "{days}");
+        }
+    }
 }

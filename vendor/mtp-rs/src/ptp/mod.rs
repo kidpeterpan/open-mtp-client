@@ -70,7 +70,8 @@ pub use pack::{
 pub use session::{receive_stream_to_stream, PtpSession, ReceiveStream};
 pub use types::{
     AccessCapability, AssociationType, DeviceInfo, DevicePropDesc, FilesystemType, ObjectInfo,
-    PropertyFormType, PropertyRange, PropertyValue, ProtectionStatus, StorageInfo, StorageType,
+    ObjectPropListElement, PropertyFormType, PropertyRange, PropertyValue, ProtectionStatus,
+    StorageInfo, StorageType,
 };
 
 /// 32-bit object handle assigned by the device.

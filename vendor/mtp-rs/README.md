@@ -8,6 +8,7 @@
 
 A pure-Rust, async MTP/PTP library.
 No C dependencies, consistently faster than libmtp (up to 4x for large transfers), and way more predictable.
+Lists big Android folders fast: 3,248 photos in 0.4 s.
 
 Talk to Android phones, e-book readers incl. Kindle, and digital cameras over USB.
 No `libmtp`, no `libusb`, no FFI, just async Rust built on [`nusb`](https://crates.io/crates/nusb).
@@ -467,6 +468,7 @@ storage.upload(Some(download.handle), file_info, data).await?;
 |--------------------------------------------------------------------------------------------------------------------|---------|---------------------------------------------------------------------------------------------------------------|
 | Google Pixel 9 Pro XL                                                                                              | 17      | Full support                                                                                                  |
 | [Google Pixel 8 Pro](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-5651477534)                            | 17      | Full support                                                                                                  |
+| [Xiaomi POCO X7 Pro](https://github.com/vdavid/mtp-rs/pull/41#issuecomment-6326777344) (HyperOS 3.0)              | 16      | Full support on Linux and on Windows                                                                          |
 | Samsung Galaxy S23 Ultra (SM-S918B)                                                                                | 14      | No root listing                                                                                               |
 | [Samsung Galaxy S23 and S23+](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-5653736162)                   | 16      | Used by [Android Bridge](https://android-bridge.com/); integration suite not run                              |
 | [Amazon Kindle Paperwhite 12th Generation (2024)](https://github.com/vdavid/mtp-rs/pull/2#issuecomment-4264713119) | -       | Full support                                                                                                  |
@@ -505,6 +507,22 @@ In practice this means a 100 MB transfer with mtp-rs reliably takes ~2.4s, while
 For large-file throughput, a separate test uploaded an 8.06 GB file to a Pixel 9 Pro XL over USB 3.2 in 98.5s,
 sustained **83.8 MB/s**. Partial reads at offsets 2 GB, 4.1 GB, and near-EOF all returned correct bytes, confirming
 `GetPartialObject64` works end-to-end on Android.
+
+### Folder listings
+
+Big folders list in a fraction of a second. When a device supports `GetObjectPropList` (modern Android does), mtp-rs asks
+for each property of a whole folder in one request, instead of describing every file in a request of its own (which
+makes Android open every photo to read its EXIF data):
+
+| Device                | Folder      | Files | One request per file | mtp-rs now | Speedup   |
+|-----------------------|-------------|-------|----------------------|------------|-----------|
+| Samsung Galaxy S23 Ultra | Camera      | 3,248 | 5.5s                 | 0.40s      | **13.7x** |
+| Samsung Galaxy S23 Ultra | Screenshots | 1,916 | 2.6s                 | 0.18s      | **14.2x** |
+| Google Pixel 9 Pro XL | Camera      | 274   | 2.8s                 | 0.24s      | **12.0x** |
+| Google Pixel 9 Pro XL | Screenshots | 726   | 0.92s                | 0.18s      | **5.1x**  |
+
+The "one request per file" column was timed with the folder already scanned by the phone, so a first visit gains even
+more. Check your own device with `cargo run --release -p mtp-rs --example list_speed -- DCIM/Camera`.
 
 The benchmark tool is included in the repo. [Run it yourself](../../benchmarks/mtp-rs-vs-libmtp/) with
 `cargo run -p mtp-bench -- --warmup 5 --runs 10`.

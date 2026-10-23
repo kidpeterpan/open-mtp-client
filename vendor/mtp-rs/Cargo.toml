@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.85"
 name = "mtp-rs"
-version = "0.33.0"
+version = "0.34.0"
 authors = ["David Veszelovszki <veszelovszki@gmail.com>"]
 build = false
 exclude = ["proptest-regressions/"]

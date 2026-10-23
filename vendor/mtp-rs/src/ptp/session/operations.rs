@@ -325,6 +325,50 @@ impl PtpSession {
         Ok(data)
     }
 
+    /// Get object property list.
+    ///
+    /// Retrieves property values of `handle` and, with a nonzero `depth`, of the objects below
+    /// it, in one transaction. This is an MTP extension operation (0x9805).
+    ///
+    /// # Arguments
+    ///
+    /// * `handle` - The object to start from, or `ObjectHandle::ALL` for every object
+    /// * `format` - Only objects of this format, or `None` for all formats
+    /// * `property` - One property, or `None` for all of them (`0xFFFFFFFF`). A property code
+    ///   of `0` (`ObjectPropertyCode::Unknown(0)`) asks the device to select by `group`
+    /// * `group` - The property group code; only read when the property code is `0`
+    /// * `depth` - `0` for `handle` alone, `1` to add its direct children, and so on
+    ///   (`0xFFFFFFFF` for all levels). A device may decline a depth it doesn't support
+    ///
+    /// # Returns
+    ///
+    /// Returns the raw dataset; parse it with [`ObjectPropListElement::list_from_bytes`]. An
+    /// answer for `depth > 0` may include `handle` itself, so a caller after the children alone
+    /// should filter it out by handle.
+    ///
+    /// [`ObjectPropListElement::list_from_bytes`]: crate::ptp::ObjectPropListElement::list_from_bytes
+    pub async fn get_object_prop_list(
+        &self,
+        handle: ObjectHandle,
+        format: Option<ObjectFormatCode>,
+        property: Option<ObjectPropertyCode>,
+        group: u32,
+        depth: u32,
+    ) -> Result<Vec<u8>, Error> {
+        let format_code = format.map(|f| u32::from(u16::from(f))).unwrap_or(0);
+        let property_code = property
+            .map(|p| u32::from(u16::from(p)))
+            .unwrap_or(0xFFFF_FFFF);
+        let (response, data) = self
+            .execute_with_receive(
+                OperationCode::GetObjectPropList,
+                &[handle.0, format_code, property_code, group, depth],
+            )
+            .await?;
+        Self::check_response(&response, OperationCode::GetObjectPropList)?;
+        Ok(data)
+    }
+
     /// Set object property value.
     ///
     /// Sets the value of a specific property for an object.

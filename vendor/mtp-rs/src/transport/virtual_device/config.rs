@@ -73,6 +73,29 @@ pub struct VirtualDeviceConfig {
     /// Like the 64-bit flag, `false` means the operation is *refused*, not merely
     /// unadvertised.
     pub supports_partial_object: bool,
+    /// Whether the device advertises and serves `GetObjectPropList` (0x9805), which
+    /// lets a host list a folder's children in one request per property instead of
+    /// one `GetObjectInfo` each. Modern Android advertises it, so this defaults to
+    /// `true`; set `false` to model a responder without it (most PTP cameras) and
+    /// exercise the per-handle listing. Like the partial-read flags, `false` means
+    /// the operation is *refused*, not merely unadvertised.
+    ///
+    /// The answers model Android's `MtpDatabase.getObjectPropertyList`: group code
+    /// 0 only, depth 0 or 1, a depth-1 answer lists the folder's children and then
+    /// the folder itself, "all properties" (`0xFFFFFFFF`) returns Android's file
+    /// property set (which has no `DateCreated`; the library's listings never ask
+    /// for it, but low-level `ptp::` callers can), and a property the device doesn't
+    /// know comes back with data type `Undefined` and no value. Every value matches
+    /// what `GetObjectInfo` reports for the same object, except that `ObjectSize`
+    /// is the full 64-bit size. An object that `GetObjectInfo` refuses to describe
+    /// ([`undescribable_objects`](Self::undescribable_objects) or
+    /// [`force_object_info_error`](super::registry::force_object_info_error)) fails
+    /// any `GetObjectPropList` whose answer would include it.
+    pub supports_object_prop_list: bool,
+    /// Properties that `GetObjectPropList` declines with `Invalid_ObjectPropCode`
+    /// (0xA801) when asked for one at a time. Use it to model a device that can't
+    /// serve a property a host needs (or would like). Defaults to empty.
+    pub prop_list_declined_properties: Vec<crate::ptp::ObjectPropertyCode>,
     /// How long `receive_interrupt` waits when no events are pending.
     /// Simulates the USB interrupt endpoint blocking behavior.
     /// Default: 50ms for production use. Use `Duration::ZERO` in tests
@@ -160,6 +183,8 @@ impl Default for VirtualDeviceConfig {
             android: false,
             supports_partial_object_64: true,
             supports_partial_object: true,
+            supports_object_prop_list: true,
+            prop_list_declined_properties: Vec::new(),
             event_poll_interval: Duration::from_millis(50),
             watch_backing_dirs: true,
             undescribable_objects: Vec::new(),
@@ -206,6 +231,7 @@ mod tests {
 
         assert!(config.supports_rename);
         assert!(config.supports_partial_object_64);
+        assert!(config.supports_object_prop_list);
         assert_eq!(config.event_poll_interval, Duration::from_millis(50));
         assert!(config.watch_backing_dirs);
     }

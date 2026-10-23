@@ -57,6 +57,9 @@ pub(super) fn build_device_info(state: &VirtualDeviceState) -> Vec<u8> {
     if state.config.supports_rename {
         ops.push(OperationCode::SetObjectPropValue.into());
     }
+    if state.config.supports_object_prop_list {
+        ops.push(OperationCode::GetObjectPropList.into());
+    }
     if state.config.battery_level.is_some() {
         ops.push(OperationCode::GetDevicePropValue.into());
     }
@@ -203,7 +206,7 @@ pub(super) fn build_event(code: EventCode, params: &[u32]) -> Vec<u8> {
 
 /// Pack a file timestamp as an ObjectInfo datetime on the device's clock, or as
 /// the empty "no date" string when there's none or MTP can't write it.
-fn pack_file_time(time: Option<SystemTime>, state: &VirtualDeviceState) -> Vec<u8> {
+pub(super) fn pack_file_time(time: Option<SystemTime>, state: &VirtualDeviceState) -> Vec<u8> {
     let config = &state.config;
     let formatted = time
         .and_then(unix_seconds)
@@ -243,46 +246,70 @@ pub(super) fn system_time_from_unix(secs: i64) -> SystemTime {
     }
 }
 
-/// Build an ObjectInfo payload from filesystem metadata.
-pub(super) fn build_object_info(
+/// What the device reports about one object, read from its backing file.
+/// `GetObjectInfo` and `GetObjectPropList` both answer from this, so they agree.
+pub(super) struct ObjectFacts {
+    pub storage_id: StorageId,
+    pub parent: ObjectHandle,
+    pub filename: String,
+    pub is_dir: bool,
+    /// The full size: `GetObjectInfo` saturates it at `u32::MAX`, `ObjectSize` doesn't.
+    pub size: u64,
+    pub format: u16,
+    pub created: Option<SystemTime>,
+    pub modified: Option<SystemTime>,
+}
+
+/// Read [`ObjectFacts`] for `handle`, or `None` for an unknown handle or a vanished file.
+pub(super) fn object_facts(
     handle: ObjectHandle,
     state: &VirtualDeviceState,
-) -> Option<Vec<u8>> {
+) -> Option<ObjectFacts> {
     let obj = state.objects.get(&handle.0)?;
     let storage = state.find_storage(obj.storage_id)?;
-    let full_path = storage.config.backing_dir.join(&obj.rel_path);
-
-    let metadata = std::fs::metadata(full_path).ok()?;
-    let filename = obj
-        .rel_path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-
+    let metadata = std::fs::metadata(storage.config.backing_dir.join(&obj.rel_path)).ok()?;
     let is_dir = metadata.is_dir();
-    let size = if is_dir {
-        0u32
-    } else {
-        metadata.len().min(u32::MAX as u64) as u32
-    };
-    let format: u16 = if is_dir {
-        ObjectFormatCode::Association.into()
+    let format = if is_dir {
+        ObjectFormatCode::Association
     } else {
         let ext = obj
             .rel_path
             .extension()
             .unwrap_or_default()
             .to_string_lossy();
-        ObjectFormatCode::from_extension(&ext).into()
+        ObjectFormatCode::from_extension(&ext)
     };
+    Some(ObjectFacts {
+        storage_id: obj.storage_id,
+        parent: obj.parent,
+        filename: obj
+            .rel_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        is_dir,
+        size: if is_dir { 0 } else { metadata.len() },
+        format: format.into(),
+        created: metadata.created().ok(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+/// Build an ObjectInfo payload from filesystem metadata.
+pub(super) fn build_object_info(
+    handle: ObjectHandle,
+    state: &VirtualDeviceState,
+) -> Option<Vec<u8>> {
+    let facts = object_facts(handle, state)?;
+    let size = facts.size.min(u64::from(u32::MAX)) as u32;
 
     let mut buf = Vec::with_capacity(128);
 
     // StorageID
-    buf.extend_from_slice(&pack_u32(obj.storage_id.0));
+    buf.extend_from_slice(&pack_u32(facts.storage_id.0));
     // ObjectFormat
-    buf.extend_from_slice(&pack_u16(format));
+    buf.extend_from_slice(&pack_u16(facts.format));
     // ProtectionStatus: None (0)
     buf.extend_from_slice(&pack_u16(0));
     // ObjectCompressedSize
@@ -298,19 +325,19 @@ pub(super) fn build_object_info(
     buf.extend_from_slice(&pack_u32(0));
     buf.extend_from_slice(&pack_u32(0));
     // ParentObject
-    buf.extend_from_slice(&pack_u32(obj.parent.0));
+    buf.extend_from_slice(&pack_u32(facts.parent.0));
     // AssociationType
-    let assoc_type: u16 = if is_dir { 1 } else { 0 };
+    let assoc_type: u16 = if facts.is_dir { 1 } else { 0 };
     buf.extend_from_slice(&pack_u16(assoc_type));
     // AssociationDesc
     buf.extend_from_slice(&pack_u32(0));
     // SequenceNumber
     buf.extend_from_slice(&pack_u32(0));
     // Filename
-    buf.extend_from_slice(&pack_string(&filename));
+    buf.extend_from_slice(&pack_string(&facts.filename));
     // DateCreated, DateModified
-    buf.extend_from_slice(&pack_file_time(metadata.created().ok(), state));
-    buf.extend_from_slice(&pack_file_time(metadata.modified().ok(), state));
+    buf.extend_from_slice(&pack_file_time(facts.created, state));
+    buf.extend_from_slice(&pack_file_time(facts.modified, state));
     // Keywords: empty
     buf.push(0x00);
 

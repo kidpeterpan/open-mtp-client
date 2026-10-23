@@ -8,6 +8,7 @@ use super::builders::{
     build_data_container, build_device_info, build_event, build_object_info, build_response,
     build_storage_info, system_time_from_unix,
 };
+use super::prop_list::handle_get_object_prop_list;
 use super::state::{PendingSendInfo, VirtualDeviceState};
 use crate::ptp::{
     pack_string, pack_u32_array, unpack_string, EventCode, ObjectFormatCode, ObjectHandle,
@@ -41,6 +42,7 @@ pub(super) fn dispatch(
     data_payload: Option<&[u8]>,
 ) {
     let op = OperationCode::from(op_code);
+    *state.operation_counts.entry(op_code).or_default() += 1;
 
     match op {
         OperationCode::GetDeviceInfo => handle_get_device_info(state, op_code, tx_id),
@@ -80,6 +82,12 @@ pub(super) fn dispatch(
                 }
                 OperationCode::GetPartialObject64 => {
                     handle_get_partial_object_64(state, op_code, tx_id, params)
+                }
+                OperationCode::GetObjectPropList if !state.config.supports_object_prop_list => {
+                    unsupported(state, tx_id)
+                }
+                OperationCode::GetObjectPropList => {
+                    handle_get_object_prop_list(state, op_code, tx_id, params)
                 }
                 OperationCode::GetThumb => handle_get_thumb(state, tx_id, params),
                 OperationCode::GetDevicePropValue if state.config.battery_level.is_none() => {
@@ -224,6 +232,23 @@ fn handle_get_object_handles(
         return;
     }
 
+    // An unknown parent (a stale handle, say) is an error, as on Android, whose
+    // `MtpServer::doGetObjectHandles` answers Invalid_ObjectHandle when the
+    // database finds no such object. An empty OK list would read as an empty
+    // folder, which a host can't tell from "everything was deleted".
+    let known = |state: &VirtualDeviceState| {
+        state
+            .objects
+            .get(&parent.0)
+            .is_some_and(|obj| obj.storage_id == storage_id)
+    };
+    if parent != ObjectHandle::ALL && parent != ObjectHandle::ROOT && !known(state) {
+        state
+            .response_queue
+            .push_back(build_response(INVALID_OBJECT_HANDLE, tx_id, &[]));
+        return;
+    }
+
     let handles_result = if parent == ObjectHandle::ALL {
         state.scan_all(storage_id)
     } else {
@@ -259,6 +284,25 @@ fn is_undescribable(configured: &[String], rel_path: &Path) -> bool {
         .any(|candidate| Path::new(candidate).components().eq(rel_path.components()))
 }
 
+/// The response code the device refuses to describe `handle` with, if it does.
+///
+/// Test hooks: a device that enumerated this handle but won't describe it. The
+/// object itself stays present and readable, so the listing has something to be
+/// tolerant *about*. Armed either by handle at runtime (`force_object_info_error`)
+/// or by path up front (`VirtualDeviceConfig::undescribable_objects`, for
+/// consumers testing their own binary out of process). `GetObjectInfo` answers it
+/// for the object, and `GetObjectPropList` for any answer that would include it.
+pub(super) fn description_refusal(state: &VirtualDeviceState, handle: ObjectHandle) -> Option<u16> {
+    if let Some(&code) = state.forced_object_info_errors.get(&handle.0) {
+        return Some(code);
+    }
+    let undescribable = !state.config.undescribable_objects.is_empty()
+        && state.objects.get(&handle.0).is_some_and(|obj| {
+            is_undescribable(&state.config.undescribable_objects, &obj.rel_path)
+        });
+    undescribable.then_some(GENERAL_ERROR)
+}
+
 fn handle_get_object_info(
     state: &mut VirtualDeviceState,
     op_code: u16,
@@ -266,29 +310,11 @@ fn handle_get_object_info(
     params: &[u32],
 ) {
     let handle = ObjectHandle(params.first().copied().unwrap_or(0));
-
-    // Test hooks: a device that enumerated this handle but won't describe it. The
-    // object itself stays present and readable, so the listing has something to
-    // be tolerant *about*. Armed either by handle at runtime
-    // (`force_object_info_error`) or by path up front
-    // (`VirtualDeviceConfig::undescribable_objects`, for consumers testing their
-    // own binary out of process).
-    if let Some(&code) = state.forced_object_info_errors.get(&handle.0) {
+    if let Some(code) = description_refusal(state, handle) {
         state
             .response_queue
             .push_back(build_response(code, tx_id, &[]));
         return;
-    }
-    if !state.config.undescribable_objects.is_empty() {
-        let undescribable = state.objects.get(&handle.0).is_some_and(|obj| {
-            is_undescribable(&state.config.undescribable_objects, &obj.rel_path)
-        });
-        if undescribable {
-            state
-                .response_queue
-                .push_back(build_response(GENERAL_ERROR, tx_id, &[]));
-            return;
-        }
     }
 
     match build_object_info(handle, state) {

@@ -7,7 +7,7 @@ use super::consts::WPD_DEVICE_OBJECT_ID;
 use super::events::WpdEventSink;
 use super::ids::IdMap;
 use super::props::{
-    is_folder_content_type, map_hresult, read_object_info, set_u32, take_pwstr, wide,
+    is_folder_content_type, map_hresult, read_date, read_object_info, set_u32, take_pwstr, wide,
 };
 use crate::cancel::CancelToken;
 use crate::mtp::object::NewObjectInfo;
@@ -367,8 +367,8 @@ impl WpdDevice {
             filename,
             size,
             format,
-            created: None,
-            modified: None,
+            created: read_date(&v, &WPD_OBJECT_DATE_CREATED),
+            modified: read_date(&v, &WPD_OBJECT_DATE_MODIFIED),
             image_width: 0,
             image_height: 0,
             folder,
