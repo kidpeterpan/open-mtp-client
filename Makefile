@@ -154,7 +154,7 @@ coverage: prune
 # It mutates its own copy of the tree. More cargo-mutants options: make mutants MUTANTS_ARGS="--shard 0/4".
 mutants:
 	@command -v cargo-mutants >/dev/null 2>&1 || { echo "cargo-mutants is not installed: cargo install cargo-mutants --locked --version 27.1.0"; exit 1; }
-	@rm -rf target/mutants
+	@rm -rf target/mutants && mkdir -p target/mutants
 	@cargo mutants --output target/mutants $(MUTANTS_ARGS); status=$$?; \
 	if [ $$status -ne 0 ] && [ $$status -ne 2 ] && [ $$status -ne 3 ]; then echo "cargo-mutants stopped with status $$status"; exit $$status; fi; \
 	test -f target/mutants/mutants.out/missed.txt || { echo "cargo-mutants left no missed.txt"; exit 1; }; \

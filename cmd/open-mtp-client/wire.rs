@@ -3115,14 +3115,27 @@ mod tests {
         }
     }
 
-    /// Runs `make mutants` in a folder holding the real Makefile and the real
-    /// expected-survivors file, with a fake `cargo` that writes `missed` as
-    /// cargo-mutants' missed.txt (none when `None`) and ends with `status`, so
-    /// nothing is mutated, and, when `installed`, a fake `cargo-mutants` so the
-    /// install check passes.
+    /// `run_mutants` with no mutant whose tests timed out.
     fn mutants(
         folder: &std::path::Path,
         missed: Option<&str>,
+        status: i32,
+        installed: bool,
+    ) -> std::process::Output {
+        run_mutants(folder, missed, "", status, installed)
+    }
+
+    /// Runs `make mutants` in a folder holding the real Makefile and the real
+    /// expected-survivors file, with a fake `cargo` that writes `missed` as
+    /// cargo-mutants' missed.txt (none when `None`) and `timed_out` as its
+    /// timeout.txt, and ends with `status`, so nothing is mutated; the fake
+    /// makes its output folder as cargo-mutants does, one level deep, and fails
+    /// as it does when the folder above is missing. When `installed`, a fake
+    /// `cargo-mutants` makes the install check pass.
+    fn run_mutants(
+        folder: &std::path::Path,
+        missed: Option<&str>,
+        timed_out: &str,
         status: i32,
         installed: bool,
     ) -> std::process::Output {
@@ -3134,18 +3147,21 @@ mod tests {
             std::fs::write(&path, body).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         };
-        let writes = match missed {
-            Some(text) => {
-                std::fs::write(folder.join("fake-missed.txt"), text).unwrap();
-                format!(
-                    "mkdir -p target/mutants/mutants.out\n\
-                     cat {}/fake-missed.txt > target/mutants/mutants.out/missed.txt\n\
-                     : > target/mutants/mutants.out/timeout.txt\n",
-                    folder.display()
-                )
-            }
-            None => "mkdir -p target/mutants/mutants.out\n".to_owned(),
-        };
+        std::fs::write(folder.join("fake-timeout.txt"), timed_out).unwrap();
+        let mut writes = format!(
+            "[ -d target/mutants ] || mkdir target/mutants || \
+             {{ echo \"Error: create output parent directory target/mutants\" >&2; exit 1; }}\n\
+             mkdir -p target/mutants/mutants.out\n\
+             cat {}/fake-timeout.txt > target/mutants/mutants.out/timeout.txt\n",
+            folder.display()
+        );
+        if let Some(text) = missed {
+            std::fs::write(folder.join("fake-missed.txt"), text).unwrap();
+            writes += &format!(
+                "cat {}/fake-missed.txt > target/mutants/mutants.out/missed.txt\n",
+                folder.display()
+            );
+        }
         script("cargo", format!("#!/bin/sh\n{writes}exit {status}\n"));
         if installed {
             script("cargo-mutants", "#!/bin/sh\nexit 0\n".to_owned());
@@ -3268,6 +3284,40 @@ mod tests {
         assert!(!made.status.success(), "{}", said(&made));
         assert!(
             said(&made).contains("cargo-mutants is not installed"),
+            "{}",
+            said(&made)
+        );
+    }
+
+    #[test]
+    fn the_output_folder_is_made_when_target_does_not_exist_yet() {
+        // A fresh clone or a CI runner: cargo-mutants makes its output folder
+        // one level deep, so the recipe has to make the folders above it.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!dir.path().join("target").exists());
+
+        let made = mutants(dir.path(), Some(""), 0, true);
+
+        assert!(made.status.success(), "{}", said(&made));
+        assert!(dir.path().join("target/mutants").is_dir());
+    }
+
+    #[test]
+    fn a_mutant_whose_tests_timed_out_is_printed_and_does_not_fail_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let timed_out =
+            "internal/service/transfer/upload.rs:98:5: replace is_newer -> bool with true\n";
+
+        let made = run_mutants(dir.path(), Some(""), timed_out, 3, true);
+
+        assert!(made.status.success(), "{}", said(&made));
+        assert!(
+            said(&made).contains("replace is_newer -> bool with true"),
+            "{}",
+            said(&made)
+        );
+        assert!(
+            said(&made).contains("No unexpected survivors"),
             "{}",
             said(&made)
         );
