@@ -1033,3 +1033,5 @@ app.stopping_note = It stops at the next safe point, so what arrived is kept for
 app.quit_now = Quit Now
 explorer.go_to_hint = A path from the top (/), from here, or ~ for home. ↑ ↓ pick a folder; Return goes.
 whatsnew.0_2_0.1 = Choose the app's language: English, Thai, Japanese or Simplified Chinese. A Mac set to one of them opens the app in that language, and Settings › Language changes it at once without losing your place or stopping a transfer.
+whatsnew.0_2_1.1 = When something goes wrong inside the app while it opens a folder, connects to a phone or frees up space, it now stops that one job, says “Something went wrong inside the app” and keeps running, instead of waiting for ever. A phone that was working stays connected.
+whatsnew.0_2_1.2 = Updated the libraries the app is built on, including a fix for a reported memory-safety problem in one of them.
