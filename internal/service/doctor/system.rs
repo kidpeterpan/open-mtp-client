@@ -176,15 +176,14 @@ mod tests {
     }
 
     #[test]
-    fn reading_this_macs_registry_finds_no_phone_owner_and_does_not_fail() {
-        // No phone is plugged into this Mac, so nothing can hold one; what
-        // the real read must do is come back.
+    fn reading_this_macs_registry_comes_back_with_well_formed_owners() {
+        // Whatever is plugged in or running on this Mac, the real read must
+        // come back and give owners the doctor can use.
         let owners = SystemUsb.owners();
         assert!(
-            owners.iter().all(|owner| super::super::known::phone_vendor(
-                owner.vendor_id.unwrap_or(0)
-            )
-            .is_none()),
+            owners
+                .iter()
+                .all(|owner| owner.pid > 0 && !owner.process.is_empty()),
             "{owners:?}"
         );
     }
