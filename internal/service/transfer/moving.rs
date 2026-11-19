@@ -517,6 +517,44 @@ async fn progress_says_it_is_removing_and_counts_the_originals() {
 }
 
 #[tokio::test]
+async fn every_report_of_a_move_says_it_is_a_move() {
+    let s = mover().await;
+    let seen = std::sync::Mutex::new(Vec::new());
+
+    s.run(Paste::Move, "/DCIM/Camera", &["a.jpg", "b.jpg"], |p| {
+        seen.lock().unwrap().push(p)
+    })
+    .await
+    .unwrap();
+
+    let seen = seen.into_inner().unwrap();
+    assert!(seen.iter().any(|p| !p.removing), "the copy was reported");
+    assert!(seen.iter().any(|p| p.removing), "so was the removal");
+    assert!(seen.iter().all(|p| p.moving));
+}
+
+#[tokio::test]
+async fn removal_progress_owes_only_originals_that_were_copied_and_checked() {
+    let s = mover().await;
+    set_mode(s.mac.path(), 0o555); // nothing can be copied
+    let owed = std::sync::Mutex::new(Vec::new());
+
+    let result = s
+        .run(Paste::Move, "/DCIM/Camera", &["a.jpg", "b.jpg"], |p| {
+            if p.removing {
+                owed.lock().unwrap().push(p.files_total);
+            }
+        })
+        .await;
+    set_mode(s.mac.path(), 0o755);
+    result.unwrap();
+
+    let owed = owed.into_inner().unwrap();
+    assert!(!owed.is_empty(), "the removal was reported");
+    assert!(owed.iter().all(|total| *total == 0), "{owed:?}");
+}
+
+#[tokio::test]
 async fn nothing_is_removed_when_nothing_could_be_copied() {
     let s = mover().await;
     // The Mac refuses every new file in the destination.

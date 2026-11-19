@@ -3114,4 +3114,178 @@ mod tests {
             );
         }
     }
+
+    /// Runs `make mutants` in a folder holding the real Makefile and the real
+    /// expected-survivors file, with a fake `cargo` that writes `missed` as
+    /// cargo-mutants' missed.txt (none when `None`) and ends with `status`, so
+    /// nothing is mutated, and, when `installed`, a fake `cargo-mutants` so the
+    /// install check passes.
+    fn mutants(
+        folder: &std::path::Path,
+        missed: Option<&str>,
+        status: i32,
+        installed: bool,
+    ) -> std::process::Output {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = folder.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = |name: &str, body: String| {
+            let path = bin.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let writes = match missed {
+            Some(text) => {
+                std::fs::write(folder.join("fake-missed.txt"), text).unwrap();
+                format!(
+                    "mkdir -p target/mutants/mutants.out\n\
+                     cat {}/fake-missed.txt > target/mutants/mutants.out/missed.txt\n\
+                     : > target/mutants/mutants.out/timeout.txt\n",
+                    folder.display()
+                )
+            }
+            None => "mkdir -p target/mutants/mutants.out\n".to_owned(),
+        };
+        script("cargo", format!("#!/bin/sh\n{writes}exit {status}\n"));
+        if installed {
+            script("cargo-mutants", "#!/bin/sh\nexit 0\n".to_owned());
+        }
+        std::fs::write(folder.join("Makefile"), include_str!("../../Makefile")).unwrap();
+        std::fs::create_dir_all(folder.join(".cargo")).unwrap();
+        std::fs::write(
+            folder.join(".cargo/mutants-expected.txt"),
+            include_str!("../../.cargo/mutants-expected.txt"),
+        )
+        .unwrap();
+        let path = if installed {
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
+        } else {
+            "/usr/bin:/bin".to_owned()
+        };
+        std::process::Command::new("make")
+            .arg("-C")
+            .arg(folder)
+            .arg("mutants")
+            .env("PATH", path)
+            .output()
+            .unwrap()
+    }
+
+    fn said(made: &std::process::Output) -> String {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&made.stdout),
+            String::from_utf8_lossy(&made.stderr)
+        )
+    }
+
+    /// The ledger's entries, without its comments and blank lines.
+    fn expected_survivors() -> Vec<&'static str> {
+        include_str!("../../.cargo/mutants-expected.txt")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect()
+    }
+
+    #[test]
+    fn known_survivors_do_not_fail_the_mutation_run() {
+        let dir = tempfile::tempdir().unwrap();
+        // The ledger's first entry as cargo-mutants prints it, at a line that
+        // is not its real one: editing a file must not break an entry.
+        let missed = format!(
+            "internal/service/transfer/import.rs:9999:13: {}\n",
+            expected_survivors()[0]
+        );
+
+        let made = mutants(dir.path(), Some(&missed), 2, true);
+
+        assert!(made.status.success(), "{}", said(&made));
+        assert!(
+            said(&made).contains("No unexpected survivors"),
+            "{}",
+            said(&made)
+        );
+    }
+
+    #[test]
+    fn a_survivor_missing_from_the_ledger_fails_the_run_and_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let known = expected_survivors()[0];
+        let missed = format!(
+            "internal/service/transfer/import.rs:9999:13: {known}\n\
+             internal/service/transfer/upload.rs:900:9: replace is_newer -> bool with true\n"
+        );
+
+        let made = mutants(dir.path(), Some(&missed), 2, true);
+
+        assert!(!made.status.success(), "{}", said(&made));
+        assert!(
+            said(&made).contains("replace is_newer -> bool with true"),
+            "{}",
+            said(&made)
+        );
+        assert!(
+            !said(&made).contains(known),
+            "the known one is not reported: {}",
+            said(&made)
+        );
+    }
+
+    #[test]
+    fn a_failure_of_cargo_mutants_itself_stops_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let made = mutants(dir.path(), Some(""), 4, true);
+
+        assert!(!made.status.success(), "{}", said(&made));
+        assert!(
+            said(&made).contains("stopped with status 4"),
+            "{}",
+            said(&made)
+        );
+    }
+
+    #[test]
+    fn a_run_that_left_no_missed_file_fails() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let made = mutants(dir.path(), None, 0, true);
+
+        assert!(!made.status.success(), "{}", said(&made));
+        assert!(
+            said(&made).contains("left no missed.txt"),
+            "{}",
+            said(&made)
+        );
+    }
+
+    #[test]
+    fn without_cargo_mutants_the_run_stops_with_how_to_install_it() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let made = mutants(dir.path(), Some(""), 0, false);
+
+        assert!(!made.status.success(), "{}", said(&made));
+        assert!(
+            said(&made).contains("cargo-mutants is not installed"),
+            "{}",
+            said(&made)
+        );
+    }
+
+    #[test]
+    fn every_expected_survivor_says_why() {
+        let text = include_str!("../../.cargo/mutants-expected.txt");
+        let lines: Vec<&str> = text.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            assert!(
+                at > 0 && lines[at - 1].starts_with('#'),
+                "no reason above: {line}"
+            );
+        }
+        assert!(!expected_survivors().is_empty());
+    }
 }

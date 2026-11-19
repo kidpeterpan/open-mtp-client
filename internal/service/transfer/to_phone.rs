@@ -990,6 +990,12 @@ mod tests {
             .map(|p| (p.files_done, p.files_total))
             .collect();
         assert_eq!(trashing, [(0, 2), (1, 2), (2, 2)]);
+        assert!(
+            log.iter()
+                .filter(|p| p.removing && p.trashing)
+                .all(|p| p.direction == Direction::Upload),
+            "the Trash step is still a move to the phone"
+        );
     }
 
     #[tokio::test]

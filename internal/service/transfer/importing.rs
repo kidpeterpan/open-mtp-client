@@ -200,6 +200,34 @@ async fn an_import_puts_every_new_photo_in_the_folder_keeping_both_of_a_taken_na
 }
 
 #[tokio::test]
+async fn an_import_summary_says_what_came_how_much_and_where() {
+    let i = importer().await;
+
+    let summary = i.import(false).await;
+
+    assert_eq!(summary.bytes, 4 + 6 + 2);
+    assert_eq!(summary.destination, i.mac.path().to_string_lossy());
+    assert_eq!(summary.first_item.as_deref(), Some("a.jpg"));
+    let arrival = summary.arrival.expect("an import counts what arrived");
+    assert_eq!((arrival.files, arrival.bytes, arrival.there), (3, 12, 3));
+    assert!(arrival.complete);
+}
+
+#[tokio::test]
+async fn an_import_carries_on_from_a_part_an_earlier_try_left() {
+    let i = importer().await;
+    // The first two bytes of a.jpg, stamped with the phone's date for it (the
+    // 17th): that is how a part is known to belong to that file.
+    put(i.mac.path(), ".a.jpg.open-mtp-client-part", b"aa", 17);
+
+    let summary = i.import(false).await;
+
+    assert_eq!(summary.resumed, 1);
+    assert_eq!(summary.bytes, 2 + 6 + 2, "only what was still to come");
+    assert_eq!(i.mac("a.jpg"), b"aaaa");
+}
+
+#[tokio::test]
 async fn by_date_each_photo_goes_in_a_folder_for_its_day() {
     let i = importer().await;
 
@@ -748,6 +776,42 @@ async fn a_photo_that_did_not_copy_stays_on_the_phone() {
     );
     assert_eq!(summary.removal.unwrap().removed, 2);
     assert!(!i.on_phone("DCIM/Camera/a.jpg"));
+}
+
+#[tokio::test]
+async fn a_freeing_import_reports_what_it_owes_and_how_far_it_has_got() {
+    use std::os::unix::fs::PermissionsExt;
+    let i = importer().await;
+    // b.mp4 cannot be copied (as in a_photo_that_did_not_copy_stays_on_the_phone),
+    // so two originals are owed, not three.
+    let locked = i.mac.path().join("2026-10-16");
+    fs::create_dir(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    let seen = std::sync::Mutex::new(Vec::new());
+
+    i.transfer
+        .import(
+            &ImportRequest {
+                remove_from_phone: true,
+                ..i.request(true)
+            },
+            &Cancel::new(),
+            |p| {
+                if p.removing {
+                    seen.lock()
+                        .unwrap()
+                        .push((p.files_done, p.files_total, p.moving));
+                }
+            },
+        )
+        .await
+        .unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [(0, 2, true), (1, 2, true), (2, 2, true)]
+    );
 }
 
 #[tokio::test]

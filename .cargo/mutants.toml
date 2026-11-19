@@ -1,0 +1,19 @@
+# Mutation sweep of the code that decides whether an original may be deleted.
+# Run it with `make mutants` (about an hour). A survivor is a test to write,
+# or an entry in mutants-expected.txt with its reason.
+#
+# cargo-mutants 27.1.0 applies examine_re (and exclude_re) to every kind of
+# mutant except "delete field" ones (StructField): those are always examined
+# in the files below, whatever the regexes say, and cannot be excluded here.
+# That is why the survivors nobody can catch are listed in mutants-expected.txt
+# and why exclude_re is not used.
+examine_globs = [
+  "internal/service/transfer/to_phone.rs",
+  "internal/service/transfer/upload.rs",
+  "internal/service/transfer/service.rs",
+  "internal/service/transfer/import.rs",
+]
+examine_re = ["(may_go|difference|judge|is_newer|same_file|remove_originals|remove_one|should_remove|phone_is_newer|remove_imported)"]
+timeout_multiplier = 3.0
+minimum_test_timeout = 30.0
+additional_cargo_test_args = ["--lib"]

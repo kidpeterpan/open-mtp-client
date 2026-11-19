@@ -1443,6 +1443,7 @@ mod tests {
 
         assert_eq!(s.on_phone("song.mp3"), b"music");
         assert_eq!(summary.direction, Direction::Upload);
+        assert_eq!(summary.destination, "/");
         assert_eq!((summary.files, summary.bytes), (1, 5));
         assert_eq!(summary.first_item.as_deref(), Some("song.mp3"));
         assert_eq!(

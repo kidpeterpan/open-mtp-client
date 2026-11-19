@@ -1,0 +1,18 @@
+# Survivors of `make mutants` that no test can, or needs to, catch.
+# One mutant per line, written as `cargo mutants --list` prints it after
+# "path:line:col: " (no line numbers, so editing the files does not break an
+# entry). Every entry is preceded by a `#` line saying why. `make mutants`
+# fails on any survivor that is not listed here.
+# (cargo-mutants 27.1.0 cannot exclude these by regex: its name filters skip
+# "delete field" mutants. See .cargo/mutants.toml.)
+
+# Direction::Download is the #[default], so deleting the explicit field changes nothing.
+delete field direction from struct TransferSummary expression in Service::import
+# Direction::Download is the #[default], so deleting the explicit field changes nothing.
+delete field direction from struct TransferProgress expression in Service::remove_imported
+# Direction::Download is the #[default], so deleting the explicit field changes nothing.
+delete field direction from struct TransferProgress expression in Service::remove_originals
+# Differs from the default 0 only past REPORT_MOST (100,000) report entries.
+delete field report_left_out from struct TransferSummary expression in Service::import
+# Differs from the default 0 only past REPORT_MOST (100,000) report entries.
+delete field report_left_out from struct TransferSummary expression in Service::download_run_onward_with
