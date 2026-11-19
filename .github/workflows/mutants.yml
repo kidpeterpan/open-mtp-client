@@ -1,0 +1,45 @@
+name: Mutation sweep
+
+# Weekly and on demand: does a test fail when a rule that decides whether an
+# original may be deleted is wrong? It takes about an hour at one job, so it is
+# split in four, and it is not part of "CI passed". Scope and the explained
+# survivors: .cargo/mutants.toml and .cargo/mutants-expected.txt.
+on:
+  schedule:
+    - cron: "43 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutants:
+    name: Mutants (shard ${{ matrix.shard }} of 4)
+    runs-on: macos-latest
+    # A mutant whose tests hang is stopped by the sweep's own limit; this is the
+    # backstop for anything else.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants (the pinned version)
+        run: cargo install cargo-mutants --locked --version 27.1.0
+      - name: Run this shard
+        run: make mutants MUTANTS_ARGS="--shard ${{ matrix.shard }}/4"
+      - name: Keep the outcomes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutants-${{ matrix.shard }}
+          path: target/mutants
+          if-no-files-found: ignore
+          retention-days: 14
