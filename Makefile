@@ -1,6 +1,6 @@
 VIRTUAL_PHONE ?= $(CURDIR)/.virtual-phone
 
-.PHONY: run run-virtual run-virtual-two build release universal app dmg icon test test-intel test-large test-vendor cli lint fmt coverage prune
+.PHONY: run run-virtual run-virtual-two build release universal app dmg icon test test-intel test-large test-vendor cli lint fmt coverage mutants prune
 
 # Line coverage the workspace must keep. CI measured 97.8% when this was set,
 # so 96 leaves room for noise but fails a change that lands a lot of code with
@@ -148,3 +148,18 @@ fmt:
 
 coverage: prune
 	cargo llvm-cov --workspace --summary-only --fail-under-lines $(COVERAGE_MIN)
+
+# The mutation sweep of the rules that decide whether an original may be deleted.
+# Scope: .cargo/mutants.toml. Survivors that are known and explained: .cargo/mutants-expected.txt.
+# It mutates its own copy of the tree. More cargo-mutants options: make mutants MUTANTS_ARGS="--shard 0/4".
+mutants:
+	@command -v cargo-mutants >/dev/null 2>&1 || { echo "cargo-mutants is not installed: cargo install cargo-mutants --locked --version 27.1.0"; exit 1; }
+	@rm -rf target/mutants
+	@cargo mutants --output target/mutants $(MUTANTS_ARGS); status=$$?; \
+	if [ $$status -ne 0 ] && [ $$status -ne 2 ] && [ $$status -ne 3 ]; then echo "cargo-mutants stopped with status $$status"; exit $$status; fi; \
+	test -f target/mutants/mutants.out/missed.txt || { echo "cargo-mutants left no missed.txt"; exit 1; }; \
+	if [ -s target/mutants/mutants.out/timeout.txt ]; then echo "Mutants whose tests timed out (counted as noticed):"; cat target/mutants/mutants.out/timeout.txt; fi; \
+	grep -v -e '^#' -e '^$$' .cargo/mutants-expected.txt > target/mutants/expected.txt; \
+	sed 's/^[^ ]* //' target/mutants/mutants.out/missed.txt | grep -v -x -F -f target/mutants/expected.txt > target/mutants/unexpected.txt; \
+	if [ -s target/mutants/unexpected.txt ]; then echo "Mutants no test noticed (add a test, or explain it in .cargo/mutants-expected.txt):"; cat target/mutants/unexpected.txt; exit 1; fi; \
+	echo "No unexpected survivors."
