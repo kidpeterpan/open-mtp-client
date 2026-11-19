@@ -75,6 +75,20 @@ enum Quitting {
     Stopping,
 }
 
+/// A dialog that covers the window. The variants are in the order the view
+/// draws them in, which is the order `App::open_dialog` looks in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialog {
+    /// The question about quitting with a transfer under way, or stopping it.
+    Quit(Quitting),
+    Import,
+    Space,
+    Mirror,
+    Settings,
+    Info,
+    Help,
+}
+
 #[derive(Debug, Clone)]
 // A finished transfer's summary makes `Transfer` the big variant; it comes
 // once per transfer, so boxing it would buy nothing but noise at every use.
@@ -448,15 +462,65 @@ impl App {
         }
     }
 
-    /// Settings, Help, Get Info, the import or the mirror dialog is up.
+    /// The dialog covering the window, if one is up: the first that is open, in
+    /// the order the view draws them in.
+    fn open_dialog(&self) -> Option<Dialog> {
+        if let Some(quitting) = self.quitting {
+            Some(Dialog::Quit(quitting))
+        } else if self.import.is_open() {
+            Some(Dialog::Import)
+        } else if self.space.is_open() {
+            Some(Dialog::Space)
+        } else if self.mirror.is_open() {
+            Some(Dialog::Mirror)
+        } else if self.settings.is_open() {
+            Some(Dialog::Settings)
+        } else if self.info.is_open() {
+            Some(Dialog::Info)
+        } else if self.help.is_open() {
+            Some(Dialog::Help)
+        } else {
+            None
+        }
+    }
+
+    /// A dialog covers the window: Settings, Help, Get Info, the import, the
+    /// mirror or the space dialog, or the question about quitting.
     fn dialog_is_open(&self) -> bool {
-        self.quitting.is_some()
-            || self.settings.is_open()
-            || self.help.is_open()
-            || self.info.is_open()
-            || self.import.is_open()
-            || self.mirror.is_open()
-            || self.space.is_open()
+        self.open_dialog().is_some()
+    }
+
+    /// Closes `dialog` the way Escape does. Settings and Help go through their
+    /// own Close messages, which they act on (Settings applies what was set).
+    fn close_dialog(&mut self, dialog: Dialog) -> Task<Message> {
+        match dialog {
+            Dialog::Quit(_) => {
+                self.quitting = None;
+                Task::none()
+            }
+            Dialog::Import => {
+                self.import.close();
+                Task::none()
+            }
+            Dialog::Space => {
+                self.space.close();
+                Task::none()
+            }
+            Dialog::Mirror => {
+                self.mirror.close();
+                Task::none()
+            }
+            Dialog::Settings => self.update(Message::Settings(settings::Message::Request(
+                settings::Request::Close,
+            ))),
+            Dialog::Info => {
+                self.info.close();
+                Task::none()
+            }
+            Dialog::Help => {
+                self.update(Message::Help(help::Message::Request(help::Request::Close)))
+            }
+        }
     }
 
     /// What Go › Recent Folders lists: the open phone's folders shown lately
@@ -1672,49 +1736,24 @@ impl App {
         if shortcut == Shortcut::Quit {
             return self.ask_to_quit();
         }
-        if let Some(quitting) = self.quitting {
-            if quitting == Quitting::Asking && shortcut == Shortcut::Pane(explorer::Request::Escape)
-            {
-                self.quitting = None;
-            }
-            return Task::none();
-        }
-        // The import and mirror dialogs cover the window; Escape closes them.
-        if self.import.is_open() || self.mirror.is_open() || self.space.is_open() {
-            if shortcut == Shortcut::Pane(explorer::Request::Escape) {
-                self.import.close();
-                self.mirror.close();
-                self.space.close();
-            }
-            return Task::none();
-        }
-        // The Settings dialog covers the window; Escape or ⌘, closes it.
-        if self.settings.is_open() {
-            return match shortcut {
-                Shortcut::Pane(explorer::Request::Escape) | Shortcut::Settings => self.update(
-                    Message::Settings(settings::Message::Request(settings::Request::Close)),
-                ),
-                _ => Task::none(),
+        // An open dialog covers the window and takes every key: Escape closes
+        // it, and so does the key that opens Settings, Help and Get Info. While
+        // the question about quitting is asked, only Escape (keep going) does
+        // anything.
+        if let Some(dialog) = self.open_dialog() {
+            let escape = shortcut == Shortcut::Pane(explorer::Request::Escape);
+            let closes = match dialog {
+                Dialog::Quit(quitting) => escape && quitting == Quitting::Asking,
+                Dialog::Import | Dialog::Space | Dialog::Mirror => escape,
+                Dialog::Settings => escape || shortcut == Shortcut::Settings,
+                Dialog::Help => escape || shortcut == Shortcut::Help,
+                Dialog::Info => escape || shortcut == Shortcut::GetInfo,
             };
-        }
-        // Help covers the window too; Escape or ⌘/ closes it.
-        if self.help.is_open() {
-            return match shortcut {
-                Shortcut::Pane(explorer::Request::Escape) | Shortcut::Help => {
-                    self.update(Message::Help(help::Message::Request(help::Request::Close)))
-                }
-                _ => Task::none(),
+            return if closes {
+                self.close_dialog(dialog)
+            } else {
+                Task::none()
             };
-        }
-        // Get Info covers the window too; Escape or ⌘I closes it.
-        if self.info.is_open() {
-            if matches!(
-                shortcut,
-                Shortcut::Pane(explorer::Request::Escape) | Shortcut::GetInfo
-            ) {
-                self.info.close();
-            }
-            return Task::none();
         }
         // Escape stops a fetch for Quick Look before anything else.
         if self.preview.is_fetching() && shortcut == Shortcut::Pane(explorer::Request::Escape) {
@@ -2754,22 +2793,17 @@ impl App {
         }
 
         let window = row![self.sidebar(), main].padding(8).spacing(8);
-        if let Some(quitting) = self.quitting {
-            dimmed(window.into(), quit_view(quitting))
-        } else if self.import.is_open() {
-            dimmed(window.into(), self.import.view().map(Message::Import))
-        } else if self.space.is_open() {
-            dimmed(window.into(), self.space.view().map(Message::Space))
-        } else if self.mirror.is_open() {
-            dimmed(window.into(), self.mirror.view().map(Message::Mirror))
-        } else if self.settings.is_open() {
-            dimmed(window.into(), self.settings.view().map(Message::Settings))
-        } else if self.info.is_open() {
-            dimmed(window.into(), self.info.view().map(Message::Info))
-        } else if self.help.is_open() {
-            dimmed(window.into(), self.help.view().map(Message::Help))
-        } else {
-            self.with_menu(window.into())
+        match self.open_dialog() {
+            Some(Dialog::Quit(quitting)) => dimmed(window.into(), quit_view(quitting)),
+            Some(Dialog::Import) => dimmed(window.into(), self.import.view().map(Message::Import)),
+            Some(Dialog::Space) => dimmed(window.into(), self.space.view().map(Message::Space)),
+            Some(Dialog::Mirror) => dimmed(window.into(), self.mirror.view().map(Message::Mirror)),
+            Some(Dialog::Settings) => {
+                dimmed(window.into(), self.settings.view().map(Message::Settings))
+            }
+            Some(Dialog::Info) => dimmed(window.into(), self.info.view().map(Message::Info)),
+            Some(Dialog::Help) => dimmed(window.into(), self.help.view().map(Message::Help)),
+            None => self.with_menu(window.into()),
         }
     }
 
@@ -5313,6 +5347,154 @@ mod tests {
         }
 
         assert!(help_is_open(&app));
+    }
+
+    /// How many dialogs are open, counted from each handler's own flag and not
+    /// through `open_dialog`, so a test can see a state that should not exist.
+    fn dialogs_open(app: &App) -> usize {
+        [
+            app.settings.is_open(),
+            app.help.is_open(),
+            app.info.is_open(),
+            app.import.is_open(),
+            app.mirror.is_open(),
+            app.space.is_open(),
+        ]
+        .into_iter()
+        .filter(|open| *open)
+        .count()
+    }
+
+    /// A dialog's name and the way the UI opens it.
+    type DialogOpener = (&'static str, fn(&mut App));
+
+    /// The six dialogs and the way the UI opens each (not Quit, which comes
+    /// from closing the window with a transfer under way).
+    fn dialog_openers() -> Vec<DialogOpener> {
+        vec![
+            ("Settings", |app| {
+                settings_request(app, settings::Request::Open)
+            }),
+            ("Help", |app| {
+                let _ = app.update(help_request(help::Request::Open));
+            }),
+            ("Info", |app| {
+                let _ = app.open_info(Side::Phone, false);
+            }),
+            ("Import", |app| {
+                let _ = app.update(Message::Device(device::Message::Request(
+                    device::Request::Import,
+                )));
+            }),
+            ("Mirror", |app| {
+                let _ = app.update(Message::DevicePane(explorer::Message::Request(
+                    explorer::Request::Mirror,
+                )));
+            }),
+            ("Space", |app| {
+                let _ = app.update(Message::Device(device::Message::Request(
+                    device::Request::FreeUpSpace,
+                )));
+            }),
+        ]
+    }
+
+    /// The orders (first opened, then second) in which the app itself puts the
+    /// first dialog away: Help and Settings put each other away, both put Info
+    /// away, and Space puts every other away. The other 21 of the 30 orders
+    /// stack when the open messages are sent straight to `update`; the UI never
+    /// asks for them, because an open dialog dims the window and takes every
+    /// key (`App::run`), so no second one can be requested.
+    const ONE_AT_A_TIME: [(&str, &str); 9] = [
+        ("Settings", "Help"),
+        ("Settings", "Space"),
+        ("Help", "Settings"),
+        ("Help", "Space"),
+        ("Info", "Settings"),
+        ("Info", "Help"),
+        ("Info", "Space"),
+        ("Import", "Space"),
+        ("Mirror", "Space"),
+    ];
+
+    #[tokio::test]
+    async fn the_dialogs_that_put_each_other_away_leave_exactly_one_open() {
+        let openers = dialog_openers();
+        let opener = |name: &str| openers.iter().find(|(n, _)| *n == name).unwrap().1;
+        for (first, second) in ONE_AT_A_TIME {
+            let mut app = two_listed_panes();
+            opener(first)(&mut app);
+            assert_eq!(dialogs_open(&app), 1, "{first} opens on its own");
+            opener(second)(&mut app);
+            assert_eq!(dialogs_open(&app), 1, "{first}, then {second}");
+        }
+    }
+
+    #[tokio::test]
+    async fn open_dialog_names_the_one_dialog_that_is_open() {
+        let app = two_listed_panes();
+        assert_eq!(app.open_dialog(), None);
+        assert!(!app.dialog_is_open());
+
+        let openers = dialog_openers();
+        for (name, dialog) in [
+            ("Settings", Dialog::Settings),
+            ("Help", Dialog::Help),
+            ("Info", Dialog::Info),
+            ("Import", Dialog::Import),
+            ("Mirror", Dialog::Mirror),
+            ("Space", Dialog::Space),
+        ] {
+            let mut app = two_listed_panes();
+            let open = openers.iter().find(|(n, _)| *n == name).unwrap().1;
+            open(&mut app);
+            assert_eq!(app.open_dialog(), Some(dialog), "{name}");
+            assert!(app.dialog_is_open(), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn escape_closes_only_the_open_dialog_and_other_keys_do_not_reach_the_panes() {
+        let mut cases = dialog_openers();
+        cases.push(("Quit", |app| app.quitting = Some(Quitting::Asking)));
+        for (name, open) in cases {
+            let mut app = two_listed_panes();
+            open(&mut app);
+            assert!(app.dialog_is_open(), "{name} is up");
+
+            command(&mut app, Code::KeyA);
+            assert_eq!(
+                app.local_pane.selection(),
+                None,
+                "{name}: ⌘A did not reach the Mac pane"
+            );
+
+            press(
+                &mut app,
+                keyboard::Key::Named(keyboard::key::Named::Escape),
+                Code::Escape,
+                Modifiers::empty(),
+            );
+            assert!(!app.dialog_is_open(), "{name}: Escape closes it");
+            command(&mut app, Code::KeyA);
+            assert_eq!(
+                app.local_pane.selection().unwrap().names.len(),
+                2,
+                "{name}: and the keys work again"
+            );
+        }
+    }
+
+    #[test]
+    fn the_quit_question_comes_before_every_other_dialog() {
+        let mut app = two_listed_panes();
+        settings_request(&mut app, settings::Request::Open);
+        app.quitting = Some(Quitting::Asking);
+        assert_eq!(app.open_dialog(), Some(Dialog::Quit(Quitting::Asking)));
+
+        app.quitting = Some(Quitting::Stopping);
+        assert_eq!(app.open_dialog(), Some(Dialog::Quit(Quitting::Stopping)));
+        assert!(app.dialog_is_open());
     }
 
     #[test]
