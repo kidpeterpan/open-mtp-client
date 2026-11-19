@@ -5350,7 +5350,7 @@ mod tests {
     }
 
     /// How many dialogs are open, counted from each handler's own flag and not
-    /// through `open_dialog`, so a test can see a state that should not exist.
+    /// through `open_dialog`, so a test can see a state `open_dialog` hides.
     fn dialogs_open(app: &App) -> usize {
         [
             app.settings.is_open(),
@@ -5365,124 +5365,169 @@ mod tests {
         .count()
     }
 
-    /// A dialog's name and the way the UI opens it.
-    type DialogOpener = (&'static str, fn(&mut App));
+    /// Every dialog. `open` below is an exhaustive match, so a new variant does
+    /// not compile in these tests until it says how it is opened: list it here,
+    /// next to that arm.
+    const EVERY_DIALOG: [Dialog; 7] = [
+        Dialog::Quit(Quitting::Asking),
+        Dialog::Import,
+        Dialog::Space,
+        Dialog::Mirror,
+        Dialog::Settings,
+        Dialog::Info,
+        Dialog::Help,
+    ];
 
-    /// The six dialogs and the way the UI opens each (not Quit, which comes
-    /// from closing the window with a transfer under way).
-    fn dialog_openers() -> Vec<DialogOpener> {
-        vec![
-            ("Settings", |app| {
-                settings_request(app, settings::Request::Open)
-            }),
-            ("Help", |app| {
-                let _ = app.update(help_request(help::Request::Open));
-            }),
-            ("Info", |app| {
-                let _ = app.open_info(Side::Phone, false);
-            }),
-            ("Import", |app| {
+    /// The way the UI opens `dialog` (the quit question comes from closing the
+    /// window with a transfer under way).
+    fn open(dialog: Dialog) -> fn(&mut App) {
+        match dialog {
+            Dialog::Quit(_) => |app| app.quitting = Some(Quitting::Asking),
+            Dialog::Import => |app| {
                 let _ = app.update(Message::Device(device::Message::Request(
                     device::Request::Import,
                 )));
-            }),
-            ("Mirror", |app| {
-                let _ = app.update(Message::DevicePane(explorer::Message::Request(
-                    explorer::Request::Mirror,
-                )));
-            }),
-            ("Space", |app| {
+            },
+            Dialog::Space => |app| {
                 let _ = app.update(Message::Device(device::Message::Request(
                     device::Request::FreeUpSpace,
                 )));
-            }),
-        ]
+            },
+            Dialog::Mirror => |app| {
+                let _ = app.update(Message::DevicePane(explorer::Message::Request(
+                    explorer::Request::Mirror,
+                )));
+            },
+            Dialog::Settings => |app| settings_request(app, settings::Request::Open),
+            Dialog::Info => |app| {
+                let _ = app.open_info(Side::Phone, false);
+            },
+            Dialog::Help => |app| {
+                let _ = app.update(help_request(help::Request::Open));
+            },
+        }
     }
 
-    /// The orders (first opened, then second) in which the app itself puts the
-    /// first dialog away: Help and Settings put each other away, both put Info
-    /// away, and Space puts every other away. The other 21 of the 30 orders
-    /// stack when the open messages are sent straight to `update`; the UI never
-    /// asks for them, because an open dialog dims the window and takes every
-    /// key (`App::run`), so no second one can be requested.
-    const ONE_AT_A_TIME: [(&str, &str); 9] = [
-        ("Settings", "Help"),
-        ("Settings", "Space"),
-        ("Help", "Settings"),
-        ("Help", "Space"),
-        ("Info", "Settings"),
-        ("Info", "Help"),
-        ("Info", "Space"),
-        ("Import", "Space"),
-        ("Mirror", "Space"),
+    fn press_escape(app: &mut App) {
+        press(
+            app,
+            keyboard::Key::Named(keyboard::key::Named::Escape),
+            Code::Escape,
+            Modifiers::empty(),
+        );
+    }
+
+    /// (opened first, opened second, the one left open): the orders in which
+    /// the app itself keeps to one dialog. Settings and Help put each other and
+    /// Get Info away, so the later one stays; Space does not open while another
+    /// dialog is up (`open_space`), so the first stays. The other orders stack:
+    /// an open dialog dims the window and takes every key, but not the menu bar,
+    /// where Settings and Help stay enabled (see the menu test below).
+    const ONE_AT_A_TIME: [(Dialog, Dialog, Dialog); 9] = [
+        (Dialog::Settings, Dialog::Help, Dialog::Help),
+        (Dialog::Settings, Dialog::Space, Dialog::Settings),
+        (Dialog::Help, Dialog::Settings, Dialog::Settings),
+        (Dialog::Help, Dialog::Space, Dialog::Help),
+        (Dialog::Info, Dialog::Settings, Dialog::Settings),
+        (Dialog::Info, Dialog::Help, Dialog::Help),
+        (Dialog::Info, Dialog::Space, Dialog::Info),
+        (Dialog::Import, Dialog::Space, Dialog::Import),
+        (Dialog::Mirror, Dialog::Space, Dialog::Mirror),
     ];
 
     #[tokio::test]
-    async fn the_dialogs_that_put_each_other_away_leave_exactly_one_open() {
-        let openers = dialog_openers();
-        let opener = |name: &str| openers.iter().find(|(n, _)| *n == name).unwrap().1;
-        for (first, second) in ONE_AT_A_TIME {
+    async fn the_orders_in_which_the_app_keeps_to_one_dialog_leave_the_right_one_open() {
+        for (first, second, left) in ONE_AT_A_TIME {
             let mut app = two_listed_panes();
-            opener(first)(&mut app);
-            assert_eq!(dialogs_open(&app), 1, "{first} opens on its own");
-            opener(second)(&mut app);
-            assert_eq!(dialogs_open(&app), 1, "{first}, then {second}");
+            open(first)(&mut app);
+            open(second)(&mut app);
+            assert_eq!(dialogs_open(&app), 1, "{first:?}, then {second:?}");
+            assert_eq!(app.open_dialog(), Some(left), "{first:?}, then {second:?}");
         }
     }
 
     #[tokio::test]
     async fn open_dialog_names_the_one_dialog_that_is_open() {
-        let app = two_listed_panes();
-        assert_eq!(app.open_dialog(), None);
-        assert!(!app.dialog_is_open());
+        assert_eq!(two_listed_panes().open_dialog(), None);
+        assert!(!two_listed_panes().dialog_is_open());
 
-        let openers = dialog_openers();
-        for (name, dialog) in [
-            ("Settings", Dialog::Settings),
-            ("Help", Dialog::Help),
-            ("Info", Dialog::Info),
-            ("Import", Dialog::Import),
-            ("Mirror", Dialog::Mirror),
-            ("Space", Dialog::Space),
-        ] {
+        for dialog in EVERY_DIALOG {
             let mut app = two_listed_panes();
-            let open = openers.iter().find(|(n, _)| *n == name).unwrap().1;
-            open(&mut app);
-            assert_eq!(app.open_dialog(), Some(dialog), "{name}");
-            assert!(app.dialog_is_open(), "{name}");
+            open(dialog)(&mut app);
+            assert_eq!(app.open_dialog(), Some(dialog), "{dialog:?}");
+            assert!(app.dialog_is_open(), "{dialog:?}");
         }
     }
 
     #[tokio::test]
     async fn escape_closes_only_the_open_dialog_and_other_keys_do_not_reach_the_panes() {
-        let mut cases = dialog_openers();
-        cases.push(("Quit", |app| app.quitting = Some(Quitting::Asking)));
-        for (name, open) in cases {
+        for dialog in EVERY_DIALOG {
             let mut app = two_listed_panes();
-            open(&mut app);
-            assert!(app.dialog_is_open(), "{name} is up");
+            open(dialog)(&mut app);
+            assert!(app.dialog_is_open(), "{dialog:?} is up");
 
             command(&mut app, Code::KeyA);
             assert_eq!(
                 app.local_pane.selection(),
                 None,
-                "{name}: ⌘A did not reach the Mac pane"
+                "{dialog:?}: ⌘A did not reach the Mac pane"
             );
 
-            press(
-                &mut app,
-                keyboard::Key::Named(keyboard::key::Named::Escape),
-                Code::Escape,
-                Modifiers::empty(),
-            );
-            assert!(!app.dialog_is_open(), "{name}: Escape closes it");
+            press_escape(&mut app);
+            assert!(!app.dialog_is_open(), "{dialog:?}: Escape closes it");
             command(&mut app, Code::KeyA);
             assert_eq!(
                 app.local_pane.selection().unwrap().names.len(),
                 2,
-                "{name}: and the keys work again"
+                "{dialog:?}: and the keys work again"
             );
         }
+    }
+
+    #[test]
+    fn escape_does_not_drop_the_quit_question_while_the_transfer_is_being_stopped() {
+        let mut app = two_listed_panes();
+        app.quitting = Some(Quitting::Stopping);
+
+        press_escape(&mut app);
+
+        assert_eq!(app.open_dialog(), Some(Dialog::Quit(Quitting::Stopping)));
+    }
+
+    #[tokio::test]
+    async fn the_key_that_opens_settings_help_or_info_also_closes_it() {
+        for (dialog, key) in [
+            (Dialog::Settings, Code::Comma),
+            (Dialog::Help, Code::Slash),
+            (Dialog::Info, Code::KeyI),
+        ] {
+            let mut app = two_listed_panes();
+            open(dialog)(&mut app);
+            assert_eq!(app.open_dialog(), Some(dialog), "{dialog:?} is up");
+
+            command(&mut app, key);
+
+            assert_eq!(app.open_dialog(), None, "{dialog:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn settings_chosen_from_the_menu_opens_beneath_a_dialog_and_shows_after_it() {
+        let mut app = two_listed_panes();
+        open(Dialog::Import)(&mut app);
+
+        let _ = choose_from_menu(&mut app, menubar::Command::Key(Shortcut::Settings));
+
+        assert_eq!(
+            dialogs_open(&app),
+            2,
+            "the menu bar is not dimmed: Settings and Help stay enabled in it"
+        );
+        assert_eq!(app.open_dialog(), Some(Dialog::Import), "the one on top");
+        press_escape(&mut app);
+        assert_eq!(app.open_dialog(), Some(Dialog::Settings), "then the other");
+        press_escape(&mut app);
+        assert_eq!(app.open_dialog(), None);
     }
 
     #[test]
