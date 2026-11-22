@@ -17,3 +17,20 @@ pub mod transfer;
 
 #[cfg(test)]
 pub(crate) mod testing;
+
+pub fn app_folder(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("Library/Application Support/open-mtp-client")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_app_folder_is_in_application_support() {
+        assert_eq!(
+            super::app_folder(Path::new("/Users/me")),
+            PathBuf::from("/Users/me/Library/Application Support/open-mtp-client")
+        );
+    }
+}

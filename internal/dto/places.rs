@@ -63,6 +63,31 @@ impl SavedMirror {
             && self.mac_folder == other.mac_folder
             && self.direction == other.direction
     }
+
+    pub fn label(&self) -> String {
+        let phone = pin_label(&self.phone_folder, &self.phone.storage_name);
+        let mac = pin_label(&self.mac_folder, "Mac");
+        match self.direction {
+            super::MirrorDirection::ToMac => format!("{phone} → {mac}"),
+            super::MirrorDirection::ToPhone => format!("{mac} → {phone}"),
+        }
+    }
+}
+
+impl PinPhone {
+    pub fn storage_among(&self, storages: &[(u64, String)]) -> Option<u64> {
+        let by_id = storages.iter().find(|(id, _)| *id == self.storage_id);
+        let by_name = || storages.iter().find(|(_, name)| *name == self.storage_name);
+        by_id.or_else(by_name).map(|(id, _)| *id)
+    }
+}
+
+pub fn pin_label(path: &str, top: &str) -> String {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| top.to_owned(), str::to_owned)
 }
 
 /// How many mirrors are kept.
@@ -89,3 +114,67 @@ pub struct DiskSpace {
 pub const MOST_PINS: usize = 50;
 /// The most mounted disks listed.
 pub const MOST_VOLUMES: usize = 12;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dto::MirrorDirection;
+
+    fn on_internal(phone_folder: &str, mac_folder: &str) -> SavedMirror {
+        SavedMirror {
+            phone: PinPhone {
+                serial: "A".into(),
+                storage_id: 1,
+                storage_name: "Internal".into(),
+            },
+            phone_folder: phone_folder.into(),
+            mac_folder: mac_folder.into(),
+            direction: MirrorDirection::ToMac,
+            remove_extras: false,
+        }
+    }
+
+    #[test]
+    fn a_pin_is_called_by_its_folders_name_or_the_storages_at_the_top() {
+        assert_eq!(pin_label("/DCIM/Camera", "Internal"), "Camera");
+        assert_eq!(pin_label("/DCIM/Camera/", "Internal"), "Camera");
+        assert_eq!(pin_label("/", "Internal"), "Internal");
+        assert_eq!(pin_label("/", "Macintosh HD"), "Macintosh HD");
+    }
+
+    #[test]
+    fn a_pins_storage_is_found_by_id_then_by_name() {
+        let pin = PinPhone {
+            serial: "S".into(),
+            storage_id: 2,
+            storage_name: "SD card".into(),
+        };
+        let storages = vec![(1, "Internal".to_owned()), (3, "SD card".to_owned())];
+
+        assert_eq!(
+            pin.storage_among(&storages),
+            Some(3),
+            "by name: the id changed"
+        );
+        assert_eq!(
+            pin.storage_among(&[(2, "Card".to_owned())]),
+            Some(2),
+            "by id first"
+        );
+        assert_eq!(pin.storage_among(&[(1, "Internal".to_owned())]), None);
+    }
+
+    #[test]
+    fn a_saved_mirror_is_named_from_where_to_where() {
+        assert_eq!(
+            on_internal("/DCIM/Camera", "/Users/me/Phone photos").label(),
+            "Camera → Phone photos"
+        );
+        let to_phone = SavedMirror {
+            direction: MirrorDirection::ToPhone,
+            ..on_internal("/", "/Users/me/Music")
+        };
+        assert_eq!(to_phone.label(), "Music → Internal");
+        assert_eq!(on_internal("/DCIM", "/").label(), "DCIM → Mac");
+    }
+}

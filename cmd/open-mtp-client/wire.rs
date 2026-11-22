@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use internal::dto;
 use internal::service::{
-    crash, device, doctor, explorer, help, local, places, settings, thumbnail, transfer,
+    app_folder, crash, device, doctor, explorer, help, local, places, settings, thumbnail, transfer,
 };
 
 use crate::handler;
@@ -195,7 +195,7 @@ impl handler::info::Service for Counting {
 
 /// The folders pinned to the sidebar.
 fn places_path(home: &std::path::Path) -> PathBuf {
-    home.join("Library/Application Support/open-mtp-client/places.json")
+    app_folder(home).join("places.json")
 }
 
 /// The sidebar's places, read off the UI thread (a folder of the user's on a
@@ -245,13 +245,13 @@ fn thumbnails(device: Arc<device::Service>, home: &std::path::Path) -> thumbnail
 /// Where working copies of phone files being edited are kept: beside the
 /// settings, not in a cache macOS or a cleaner may empty.
 fn editing_dir(home: &std::path::Path) -> PathBuf {
-    home.join("Library/Application Support/open-mtp-client/editing")
+    app_folder(home).join("editing")
 }
 
 /// Where a panic leaves its report: beside the settings, never in a place the
 /// system or the app clears by itself.
 fn crashes_dir(home: &std::path::Path) -> PathBuf {
-    home.join("Library/Application Support/open-mtp-client/crashes")
+    app_folder(home).join("crashes")
 }
 
 /// Makes every panic from now on write a report (`crash::Crashes::install`).
@@ -291,12 +291,12 @@ impl handler::crash::Service for CrashDesk {
 }
 
 fn imports_dir(home: &std::path::Path) -> PathBuf {
-    home.join("Library/Application Support/open-mtp-client/imported")
+    app_folder(home).join("imported")
 }
 
 /// The settings file, in the app's own Application Support folder.
 fn settings_path(home: &std::path::Path) -> PathBuf {
-    home.join("Library/Application Support/open-mtp-client/settings.json")
+    app_folder(home).join("settings.json")
 }
 
 /// Where settings were saved while the app was called mtprust.

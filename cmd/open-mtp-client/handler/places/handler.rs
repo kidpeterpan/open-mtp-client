@@ -260,7 +260,7 @@ impl Handler {
                 let target = match (&pin.phone, phone) {
                     (None, _) => Target::Mac(pin.path.clone()),
                     (Some(on), Some(open)) if on.serial == open.serial => Target::Phone {
-                        storage_id: mapper::storage_of(on, &open.storages)?,
+                        storage_id: on.storage_among(&open.storages)?,
                         path: pin.path.clone(),
                     },
                     _ => return None,
@@ -301,16 +301,14 @@ impl Handler {
                     .enumerate()
                     .filter(|(_, mirror)| mirror.phone.serial == open.serial)
                     .filter_map(|(at, mirror)| {
-                        let storage_id = mapper::storage_of(&mirror.phone, &open.storages)?;
+                        let storage_id = mirror.phone.storage_among(&open.storages)?;
                         let tag = match mirror.direction {
                             dto::MirrorDirection::ToMac => t("places.tag.to_mac"),
                             dto::MirrorDirection::ToPhone => t("places.tag.to_phone"),
                         };
                         let open_it = button(
                             row![
-                                text(mapper::mirror_label(mirror))
-                                    .size(14)
-                                    .wrapping(text::Wrapping::None),
+                                text(mirror.label()).size(14).wrapping(text::Wrapping::None),
                                 text(tag)
                                     .size(11)
                                     .style(text::secondary)
@@ -855,18 +853,5 @@ mod tests {
         handler.save_mirror(saved("/DCIM", "/m", "ABC"));
         assert!(handler.notice.is_some());
         assert_eq!(handler.mirrors.len(), 1, "kept here even so");
-    }
-
-    #[test]
-    fn a_saved_mirror_is_named_from_where_to_where() {
-        assert_eq!(
-            mapper::mirror_label(&saved("/DCIM/Camera", "/Users/me/Phone photos", "A")),
-            "Camera → Phone photos"
-        );
-        let to_phone = dto::SavedMirror {
-            direction: dto::MirrorDirection::ToPhone,
-            ..saved("/", "/Users/me/Music", "A")
-        };
-        assert_eq!(mapper::mirror_label(&to_phone), "Music → Internal");
     }
 }

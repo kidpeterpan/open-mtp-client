@@ -160,7 +160,13 @@ open-mtp-client-cli phones
 open-mtp-client-cli ls /DCIM/Camera
 open-mtp-client-cli pull /DCIM/Camera ~/Pictures/phone
 open-mtp-client-cli push ~/notes.txt /Download
+open-mtp-client-cli import --by month ~/Pictures/Phone   # only photos and videos not imported before
+open-mtp-client-cli check /DCIM/Camera /Volumes/Backup    # byte for byte; exit 1 if anything differs
+open-mtp-client-cli mirrors                               # the mirrors you saved in the app
+open-mtp-client-cli mirror 1 --dry-run                    # what mirror 1 would do
 ```
+
+Nothing runs by itself: the app never imports or mirrors unless you ask it to, and the tool only does what a script you wrote tells it.
 
 ## Contribute
 

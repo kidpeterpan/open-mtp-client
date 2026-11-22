@@ -1,6 +1,6 @@
 use internal::dto;
 
-use crate::i18n::{english_only, t, tf};
+use crate::i18n::{t, tf};
 
 pub fn place_label(place: &dto::Place) -> String {
     if place.volume {
@@ -14,37 +14,6 @@ pub fn place_label(place: &dto::Place) -> String {
         _ => t("places.home"),
     };
     label.to_owned()
-}
-
-/// A pinned folder's label: its name, or for the top of a storage or of the
-/// Mac, the storage's or the disk's name.
-pub fn pin_label(path: &str, top: &str) -> String {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty())
-        .map_or_else(|| top.to_owned(), str::to_owned)
-}
-
-/// The storage a phone pin is on, among the open phone's: by id, else by
-/// name (an SD card put back can get another id); `None` if it isn't there.
-pub fn storage_of(pin: &dto::PinPhone, storages: &[(u64, String)]) -> Option<u64> {
-    storages
-        .iter()
-        .find(|(id, _)| *id == pin.storage_id)
-        .or_else(|| storages.iter().find(|(_, name)| *name == pin.storage_name))
-        .map(|(id, _)| *id)
-}
-
-/// A saved mirror as the sidebar names it: the folder copied from, an
-/// arrow, and the folder it keeps like it ("Camera → Phone photos").
-pub fn mirror_label(mirror: &dto::SavedMirror) -> String {
-    let phone = pin_label(&mirror.phone_folder, &mirror.phone.storage_name);
-    let mac = pin_label(&mirror.mac_folder, english_only("Mac"));
-    match mirror.direction {
-        dto::MirrorDirection::ToMac => format!("{phone} → {mac}"),
-        dto::MirrorDirection::ToPhone => format!("{mac} → {phone}"),
-    }
 }
 
 /// A disk's room as the sidebar shows it: how much of the bar is used, and
@@ -87,35 +56,5 @@ mod tests {
             capacity: 0,
         });
         assert_eq!(used, 0.0, "a disk that says nothing is not full");
-    }
-
-    #[test]
-    fn a_pin_is_called_by_its_folders_name_or_the_storages_at_the_top() {
-        assert_eq!(pin_label("/DCIM/Camera", "Internal"), "Camera");
-        assert_eq!(pin_label("/DCIM/Camera/", "Internal"), "Camera");
-        assert_eq!(pin_label("/", "Internal"), "Internal");
-        assert_eq!(pin_label("/", "Macintosh HD"), "Macintosh HD");
-    }
-
-    #[test]
-    fn a_pins_storage_is_found_by_id_then_by_name() {
-        let pin = dto::PinPhone {
-            serial: "S".into(),
-            storage_id: 2,
-            storage_name: "SD card".into(),
-        };
-        let storages = vec![(1, "Internal".to_owned()), (3, "SD card".to_owned())];
-
-        assert_eq!(
-            storage_of(&pin, &storages),
-            Some(3),
-            "by name: the id changed"
-        );
-        assert_eq!(
-            storage_of(&pin, &[(2, "Card".to_owned())]),
-            Some(2),
-            "by id first"
-        );
-        assert_eq!(storage_of(&pin, &[(1, "Internal".to_owned())]), None);
     }
 }

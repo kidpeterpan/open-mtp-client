@@ -24,6 +24,7 @@ async fn main() {
         terminal: std::io::stderr().is_terminal(),
         cancel,
         trash: Some(Arc::new(internal::service::local::system_trash)),
+        home: std::env::var_os("HOME").map_or_else(|| "/".into(), Into::into),
     };
     let code = cli::run(
         &args,

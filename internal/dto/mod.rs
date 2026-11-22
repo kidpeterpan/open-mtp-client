@@ -43,6 +43,7 @@ pub use mirror::{
 pub use paste::{Paste, PasteRequest, PasteSummary};
 pub use places::{
     DiskSpace, MOST_MIRRORS, MOST_PINS, MOST_VOLUMES, Pin, PinPhone, PinSide, Place, SavedMirror,
+    pin_label,
 };
 pub use preview::{Fetched, Look, PREVIEW_CACHE, PREVIEW_LARGEST, PREVIEW_MOST, PreviewRequest};
 pub use queue::{SavedAnswer, SavedJob, SavedTransfer};
