@@ -2484,7 +2484,7 @@ impl App {
         let pin = match side {
             Side::Mac => dto::Pin {
                 side: dto::PinSide::Mac,
-                label: places::pin_label(&path, english_only("Macintosh HD")),
+                label: dto::pin_label(&path, english_only("Macintosh HD")),
                 path,
                 phone: None,
             },
@@ -2501,7 +2501,7 @@ impl App {
                 let serial = serial.to_owned();
                 dto::Pin {
                     side: dto::PinSide::Phone,
-                    label: places::pin_label(&path, &storage_name),
+                    label: dto::pin_label(&path, &storage_name),
                     path,
                     phone: Some(dto::PinPhone {
                         serial,
