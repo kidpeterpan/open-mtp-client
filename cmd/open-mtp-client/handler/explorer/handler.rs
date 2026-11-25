@@ -574,7 +574,7 @@ pub struct Handler {
     /// The dates the filter keeps.
     filter_date: Option<dto::DateRange>,
     /// Today, for the date filter: the Mac's clock, a fixed day in tests.
-    today: fn() -> chrono::NaiveDate,
+    today: fn() -> jiff::civil::Date,
     filter_input: Id,
     selection: rows::Selection,
     /// Held keys, so a click can toggle (⌘) or extend (⇧) the selection.
@@ -3046,7 +3046,7 @@ impl Handler {
                 })
             });
         }
-        let today = chrono::Local::now().date_naive();
+        let today = crate::handler::format::local_today();
         let mut all_rows: Vec<EntryResponse> = self
             .entries
             .iter()
@@ -7624,8 +7624,8 @@ mod tests {
         );
     }
 
-    fn mid_june() -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
+    fn mid_june() -> jiff::civil::Date {
+        jiff::civil::date(2026, 6, 15)
     }
 
     fn changed_on(name: &str, year: u16, month: u8, day: u8) -> dto::Entry {

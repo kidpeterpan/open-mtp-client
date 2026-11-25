@@ -1260,8 +1260,6 @@ mod tests {
 
     #[tokio::test]
     async fn modified_times_are_shown_in_mac_local_time() {
-        use chrono::{Datelike, Local, TimeZone, Timelike};
-
         let (dir, service) = phone().await;
         let instant = 1_791_376_200; // 2026-10-07 12:30 UTC
         let file = fs::File::options()
@@ -1275,16 +1273,17 @@ mod tests {
         let entries = service.list(storage, "/", false).await.unwrap();
 
         let alpha = entries.iter().find(|e| e.name == "alpha.txt").unwrap();
-        let local = Local.timestamp_opt(instant as i64, 0).unwrap();
+        let local = jiff::tz::TimeZone::system()
+            .to_datetime(jiff::Timestamp::from_second(instant as i64).unwrap());
         let stamp = alpha.modified.unwrap();
         assert_eq!(
             (stamp.year, stamp.month, stamp.day, stamp.hour, stamp.minute),
             (
-                local.year() as u16,
-                local.month() as u8,
-                local.day() as u8,
-                local.hour() as u8,
-                local.minute() as u8
+                local.year().unsigned_abs(),
+                local.month().unsigned_abs(),
+                local.day().unsigned_abs(),
+                local.hour().unsigned_abs(),
+                local.minute().unsigned_abs()
             )
         );
     }

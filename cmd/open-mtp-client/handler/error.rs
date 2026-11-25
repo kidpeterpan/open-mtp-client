@@ -8,8 +8,8 @@
 
 use std::collections::VecDeque;
 
-use chrono::{DateTime, Local};
 use internal::dto;
+use jiff::Timestamp;
 
 use crate::i18n::{english, key, t, tf};
 
@@ -56,7 +56,7 @@ pub fn english_title(err: &dto::Error) -> &'static str {
 
 pub fn note_shown(err: &dto::Error) {
     if !matches!(err, dto::Error::Cancelled) {
-        note(english(title_key(err)), Local::now());
+        note(english(title_key(err)), Timestamp::now());
     }
 }
 
@@ -202,7 +202,7 @@ const KEPT: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
     pub title: &'static str,
-    pub at: DateTime<Local>,
+    pub at: Timestamp,
     pub times: usize,
 }
 
@@ -221,7 +221,7 @@ impl Recent {
         }
     }
 
-    pub fn note(&mut self, title: &'static str, at: DateTime<Local>) {
+    pub fn note(&mut self, title: &'static str, at: Timestamp) {
         if let Some(last) = self.problems.back_mut()
             && last.title == title
         {
@@ -255,7 +255,7 @@ thread_local! {
     static RECENT: std::cell::RefCell<Recent> = const { std::cell::RefCell::new(Recent::new()) };
 }
 
-fn note(title: &'static str, at: DateTime<Local>) {
+fn note(title: &'static str, at: Timestamp) {
     #[cfg(not(test))]
     if let Ok(mut recent) = RECENT.lock() {
         recent.note(title, at);
@@ -283,12 +283,16 @@ pub fn clear_recent() {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
+    use jiff::civil::datetime;
+    use jiff::tz::TimeZone;
 
     use super::*;
 
-    fn at(minute: u32) -> DateTime<Local> {
-        Local.with_ymd_and_hms(2026, 10, 17, 14, minute, 0).unwrap()
+    /// Minute `minute` past 14:00 on the Mac's clock.
+    fn at(minute: i8) -> Timestamp {
+        TimeZone::system()
+            .to_timestamp(datetime(2026, 10, 17, 14, minute, 0, 0))
+            .unwrap()
     }
 
     #[test]
@@ -300,7 +304,7 @@ mod tests {
         recent.note("Your phone stopped responding", at(4));
 
         let problems = recent.newest_first();
-        let lines: Vec<(&str, usize, DateTime<Local>)> = problems
+        let lines: Vec<(&str, usize, Timestamp)> = problems
             .iter()
             .map(|problem| (problem.title, problem.times, problem.at))
             .collect();
@@ -320,7 +324,7 @@ mod tests {
         const TITLES: [&str; 10] = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
         let mut recent = Recent::new();
         for (minute, title) in TITLES.iter().enumerate() {
-            recent.note(title, at(minute as u32));
+            recent.note(title, at(minute as i8));
         }
 
         let titles: Vec<&str> = recent.newest_first().iter().map(|p| p.title).collect();

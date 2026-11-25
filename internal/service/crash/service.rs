@@ -364,10 +364,16 @@ struct Written<'a> {
 /// thread and location are single lines already, so the message can't write
 /// the header.
 fn report_text(report: &Written<'_>) -> String {
-    let when = chrono::DateTime::from_timestamp_millis(i64::try_from(report.at_ms).unwrap_or(0))
-        .map_or_else(String::new, |at| {
-            at.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-        });
+    let when = jiff::Timestamp::from_millisecond(i64::try_from(report.at_ms).unwrap_or(0))
+        .map_or_else(
+            |_| String::new(),
+            |at| {
+                jiff::tz::TimeZone::UTC
+                    .to_datetime(at)
+                    .strftime("%Y-%m-%d %H:%M:%S UTC")
+                    .to_string()
+            },
+        );
     format!(
         "open-mtp-client crash report\n\
          Version: {version}\n\

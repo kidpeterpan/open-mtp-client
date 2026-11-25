@@ -14,7 +14,7 @@ internal.workspace = true
 iced.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 
 [dev-dependencies]
 iced_test.workspace = true

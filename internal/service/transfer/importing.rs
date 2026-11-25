@@ -7,8 +7,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use chrono::TimeZone;
-
 use super::{ImportRecord, Service};
 use crate::dto::{
     Cancel, Error, FileOutcome, ImportPreview, ImportRequest, Original, TransferSummary,
@@ -30,14 +28,13 @@ struct Import {
 }
 
 /// Noon on a day, the Mac's local time (what a phone writes, zoneless).
-fn noon(day: u32) -> SystemTime {
-    chrono::Local
-        .with_ymd_and_hms(2026, 10, day, 12, 0, 0)
-        .unwrap()
-        .into()
+fn noon(day: i8) -> SystemTime {
+    let local = jiff::civil::datetime(2026, 10, day, 12, 0, 0, 0);
+    let at = jiff::tz::TimeZone::system().to_timestamp(local).unwrap();
+    SystemTime::try_from(at).unwrap()
 }
 
-fn put(root: &Path, path: &str, content: &[u8], day: u32) {
+fn put(root: &Path, path: &str, content: &[u8], day: i8) {
     let at = root.join(path);
     fs::create_dir_all(at.parent().unwrap()).unwrap();
     fs::write(&at, content).unwrap();

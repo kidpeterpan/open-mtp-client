@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
-use chrono::NaiveDate;
+use jiff::civil::Date;
 
 const LEDGER: &str = ".cargo/audit.toml";
 
@@ -254,9 +254,9 @@ fn on_one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn iso_date(entry: &Entry, key: &str) -> NaiveDate {
+fn iso_date(entry: &Entry, key: &str) -> Date {
     let text = required_field(entry, key);
-    let parsed = NaiveDate::parse_from_str(text, "%Y-%m-%d");
+    let parsed = text.parse::<Date>();
     match parsed {
         Ok(date) if text.len() == "YYYY-MM-DD".len() => date,
         _ => panic!(

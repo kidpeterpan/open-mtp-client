@@ -1,5 +1,6 @@
-use chrono::{DateTime, Datelike, Local};
 use internal::dto;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 use super::response::Banner;
 use crate::handler::format::short_month;
@@ -8,18 +9,18 @@ use crate::i18n::{count, t, tf};
 pub fn when(at_ms: u64) -> String {
     let Some(at) = i64::try_from(at_ms)
         .ok()
-        .and_then(DateTime::from_timestamp_millis)
+        .and_then(|ms| Timestamp::from_millisecond(ms).ok())
     else {
         return t("crash.unknown_time").to_owned();
     };
-    let at = at.with_timezone(&Local);
+    let at = TimeZone::system().to_datetime(at);
     tf(
         "date.unreal",
         &[
             ("day", &at.day().to_string()),
-            ("month", short_month(at.month())),
+            ("month", short_month(u32::from(at.month().unsigned_abs()))),
             ("year", &at.year().to_string()),
-            ("clock", &at.format("%H:%M").to_string()),
+            ("clock", &at.strftime("%H:%M").to_string()),
         ],
     )
 }
@@ -58,8 +59,6 @@ pub fn stopped(note: &dto::CrashNote) -> Banner {
 mod tests {
     use std::path::PathBuf;
 
-    use chrono::TimeZone;
-
     use super::*;
 
     fn note(at_ms: u64, file: bool) -> dto::CrashNote {
@@ -71,11 +70,11 @@ mod tests {
         }
     }
 
-    fn local_ms(hour: u32, minute: u32) -> u64 {
-        Local
-            .with_ymd_and_hms(2026, 10, 18, hour, minute, 0)
+    fn local_ms(hour: i8, minute: i8) -> u64 {
+        TimeZone::system()
+            .to_timestamp(jiff::civil::datetime(2026, 10, 18, hour, minute, 0, 0))
             .unwrap()
-            .timestamp_millis()
+            .as_millisecond()
             .try_into()
             .unwrap()
     }

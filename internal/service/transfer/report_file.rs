@@ -5,7 +5,7 @@
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::NaiveDateTime;
+use jiff::civil::DateTime;
 
 use super::Service;
 use crate::dto::Error;
@@ -15,8 +15,8 @@ use crate::service::local;
 const NAMES_TRIED: usize = 100;
 
 /// The report's file name for `at`, the `n`th tried.
-fn report_name(at: NaiveDateTime, n: usize) -> String {
-    let stamp = at.format("%Y-%m-%d %H.%M");
+fn report_name(at: DateTime, n: usize) -> String {
+    let stamp = at.strftime("%Y-%m-%d %H.%M");
     match n {
         0 => format!("Transfer report {stamp}.tsv"),
         n => format!("Transfer report {stamp} {}.tsv", n + 1),
@@ -24,7 +24,7 @@ fn report_name(at: NaiveDateTime, n: usize) -> String {
 }
 
 /// Writes `text` into `folder` as a new file named for `at`; says where.
-pub(super) fn write_report(folder: &Path, text: &str, at: NaiveDateTime) -> Result<PathBuf, Error> {
+pub(super) fn write_report(folder: &Path, text: &str, at: DateTime) -> Result<PathBuf, Error> {
     let shown = folder.to_string_lossy();
     for n in 0..NAMES_TRIED {
         let path = folder.join(report_name(at, n));
@@ -53,7 +53,7 @@ impl Service {
     /// into), named for now; says where it went.
     pub async fn save_report(&self, folder: &str, text: &str) -> Result<String, Error> {
         let (folder, text) = (PathBuf::from(folder), text.to_owned());
-        let now = chrono::Local::now().naive_local();
+        let now = jiff::tz::TimeZone::system().to_datetime(jiff::Timestamp::now());
         tokio::task::spawn_blocking(move || write_report(&folder, &text, now))
             .await
             .map_err(|err| Error::General(err.to_string()))?
@@ -65,11 +65,8 @@ impl Service {
 mod tests {
     use super::*;
 
-    fn at() -> NaiveDateTime {
-        chrono::NaiveDate::from_ymd_opt(2026, 10, 17)
-            .unwrap()
-            .and_hms_opt(14, 32, 5)
-            .unwrap()
+    fn at() -> DateTime {
+        jiff::civil::datetime(2026, 10, 17, 14, 32, 5, 0)
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use internal::dto;
+use jiff::tz::TimeZone;
 
 use super::request::Link;
 use super::response::{ShortcutGroup, ShortcutLine};
@@ -159,7 +160,7 @@ pub fn report_text(
             };
             lines.push_str(&english_only(format!(
                 "  {}  {}{times}\n",
-                problem.at.format("%H:%M"),
+                TimeZone::system().to_datetime(problem.at).strftime("%H:%M"),
                 problem.title
             )));
         }
@@ -179,7 +180,7 @@ pub fn report_text(
 /// notes hold them, never what a report says (a panic's message can hold a
 /// file's name) and never where the file is.
 fn crash_lines(crashes: &[dto::CrashNote]) -> String {
-    use chrono::{DateTime, Local};
+    use jiff::Timestamp;
 
     /// The newest few; the rest are only counted.
     const SHOWN: usize = 5;
@@ -190,12 +191,13 @@ fn crash_lines(crashes: &[dto::CrashNote]) -> String {
     for note in crashes.iter().take(SHOWN) {
         let at = i64::try_from(note.at_ms)
             .ok()
-            .and_then(DateTime::from_timestamp_millis)
+            .and_then(|ms| Timestamp::from_millisecond(ms).ok())
             .map_or_else(
                 || english_only("unknown time".to_owned()),
                 |at| {
-                    at.with_timezone(&Local)
-                        .format(english_only("%Y-%m-%d %H:%M"))
+                    TimeZone::system()
+                        .to_datetime(at)
+                        .strftime(english_only("%Y-%m-%d %H:%M"))
                         .to_string()
                 },
             );
@@ -589,10 +591,9 @@ mod tests {
     }
 
     fn problems() -> Vec<Problem> {
-        use chrono::TimeZone;
         let at = |minute| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, 17, 14, minute, 0)
+            TimeZone::system()
+                .to_timestamp(jiff::civil::datetime(2026, 10, 17, 14, minute, 0, 0))
                 .unwrap()
         };
         vec![

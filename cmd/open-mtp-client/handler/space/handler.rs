@@ -104,7 +104,7 @@ pub struct Handler {
     dialog: Option<Dialog>,
     looks: u64,
     /// What "today" is for the dates shown (fixed in tests).
-    today: fn() -> chrono::NaiveDate,
+    today: fn() -> jiff::civil::Date,
 }
 
 impl Handler {

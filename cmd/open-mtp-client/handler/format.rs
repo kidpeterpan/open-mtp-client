@@ -1,9 +1,11 @@
 //! Formatting shared by every handler.
 
-use chrono::{Datelike, NaiveDate};
 use internal::dto::{
     Abilities, DateRange, Day, DaySpan, FileKind, Language, ReadTiming, Timestamp, UsbSpeed,
 };
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
+use jiff::{Span, Timestamp as Instant};
 
 use crate::i18n::{count_in, english_only, key, language, t, tf, tf_in};
 
@@ -52,13 +54,13 @@ pub fn date_label(range: Option<DateRange>) -> &'static str {
 /// The days `range` keeps, counted back from `today` (the Mac's): files are
 /// compared by the day the pane shows, so a phone's zoneless time is never
 /// moved by a time zone.
-pub fn date_span(range: DateRange, today: NaiveDate) -> DaySpan {
-    let day = |date: NaiveDate| Day {
+pub fn date_span(range: DateRange, today: Date) -> DaySpan {
+    let day = |date: Date| Day {
         year: u16::try_from(date.year()).unwrap_or(0),
-        month: date.month() as u8,
-        day: date.day() as u8,
+        month: date.month().unsigned_abs(),
+        day: date.day().unsigned_abs(),
     };
-    let back = |days: u64| today.checked_sub_days(chrono::Days::new(days)).map(day);
+    let back = |days: i64| today.checked_sub(Span::new().days(days)).ok().map(day);
     match range {
         DateRange::Today => DaySpan {
             from: Some(day(today)),
@@ -77,14 +79,15 @@ pub fn date_span(range: DateRange, today: NaiveDate) -> DaySpan {
             until: Some(day(today)),
         },
         DateRange::ThisYear => DaySpan {
-            from: today.with_ordinal(1).map(day),
+            from: Some(day(today.first_of_year())),
             until: None,
         },
         DateRange::OlderThanAYear => DaySpan {
             from: None,
             until: today
-                .checked_sub_months(chrono::Months::new(12))
-                .and_then(|year_ago| year_ago.pred_opt())
+                .checked_sub(Span::new().months(12))
+                .and_then(Date::yesterday)
+                .ok()
                 .map(day),
         },
     }
@@ -119,8 +122,19 @@ pub fn slow_link_note(link: Option<UsbSpeed>) -> Option<String> {
 }
 
 /// Today on the Mac.
-pub fn local_today() -> NaiveDate {
-    chrono::Local::now().date_naive()
+pub fn local_today() -> Date {
+    TimeZone::system().to_datetime(Instant::now()).date()
+}
+
+/// The calendar day a device's year, month and day name; `None` when they
+/// are not a real day (a phone can write anything).
+pub fn calendar_day(year: u16, month: u8, day: u8) -> Option<Date> {
+    Date::new(
+        i16::try_from(year).ok()?,
+        i8::try_from(month).ok()?,
+        i8::try_from(day).ok()?,
+    )
+    .ok()
 }
 
 /// A count with thousands separators: 3,400.
@@ -194,7 +208,7 @@ pub fn short_month(month: u32) -> &'static str {
 /// Finder-style, relative to `today`: "Today, 12:33", "Yesterday, 09:05",
 /// "3 Aug, 11:40" this year, "11 Jul 2025" before. Shown as the device wrote it
 /// when the date is not a real calendar day.
-pub fn format_timestamp(time: &Timestamp, today: NaiveDate) -> String {
+pub fn format_timestamp(time: &Timestamp, today: Date) -> String {
     let month = MONTH_KEYS
         .get(usize::from(time.month).wrapping_sub(1))
         .map_or("???", |month_key| t(month_key));
@@ -202,11 +216,7 @@ pub fn format_timestamp(time: &Timestamp, today: NaiveDate) -> String {
     let day = time.day.to_string();
     let year = time.year.to_string();
 
-    let Some(date) = NaiveDate::from_ymd_opt(
-        i32::from(time.year),
-        u32::from(time.month),
-        u32::from(time.day),
-    ) else {
+    let Some(date) = calendar_day(time.year, time.month, time.day) else {
         return tf(
             "date.unreal",
             &[
@@ -220,7 +230,7 @@ pub fn format_timestamp(time: &Timestamp, today: NaiveDate) -> String {
 
     if date == today {
         tf("date.today", &[("clock", &clock)])
-    } else if Some(date) == today.pred_opt() {
+    } else if today.yesterday().ok() == Some(date) {
         tf("date.yesterday", &[("clock", &clock)])
     } else if date.year() == today.year() {
         tf(
@@ -471,8 +481,29 @@ mod tests {
         }
     }
 
-    fn today() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 10, 16).unwrap()
+    fn today() -> Date {
+        jiff::civil::date(2026, 10, 16)
+    }
+
+    #[test]
+    fn a_calendar_day_is_made_only_from_a_real_one() {
+        assert_eq!(calendar_day(2026, 10, 16), Some(today()));
+        assert_eq!(
+            calendar_day(2028, 2, 29),
+            Some(jiff::civil::date(2028, 2, 29))
+        );
+        assert_eq!(calendar_day(2026, 2, 29), None, "not a leap year");
+        assert_eq!(calendar_day(2026, 0, 1), None);
+        assert_eq!(calendar_day(2026, 13, 1), None);
+        // A byte too big for jiff's month must be refused, not wrapped into a
+        // negative number that some other check has to catch.
+        assert_eq!(calendar_day(2026, 200, 1), None);
+        assert_eq!(calendar_day(2026, 1, 200), None);
+        assert_eq!(
+            calendar_day(u16::MAX, 1, 1),
+            None,
+            "past the years jiff holds"
+        );
     }
 
     fn on(year: u16, month: u8, day: u8) -> Day {
@@ -507,7 +538,7 @@ mod tests {
 
     #[test]
     fn each_date_choice_keeps_the_days_counted_back_from_today() {
-        let today = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let today = jiff::civil::date(2026, 3, 1);
         let span = |range| date_span(range, today);
 
         assert_eq!(
@@ -542,7 +573,7 @@ mod tests {
                 until: Some(on(2025, 2, 28))
             }
         );
-        let leap = NaiveDate::from_ymd_opt(2028, 2, 29).unwrap();
+        let leap = jiff::civil::date(2028, 2, 29);
         assert_eq!(
             date_span(DateRange::OlderThanAYear, leap).until,
             Some(on(2027, 2, 27)),
@@ -574,7 +605,7 @@ mod tests {
 
     #[test]
     fn yesterday_works_across_a_year_boundary() {
-        let new_year = NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+        let new_year = jiff::civil::date(2027, 1, 1);
 
         assert_eq!(
             format_timestamp(&at(2026, 12, 31), new_year),

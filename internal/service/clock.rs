@@ -1,22 +1,20 @@
 //! This Mac's time zone. MTP dates are either zoneless phone-local times or
 //! carry their own offset; both are shown in the Mac's local time.
 
-use chrono::{Local, Offset, TimeZone};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 /// Minutes east of UTC for the local zone at `unix_secs`, so daylight saving
 /// is applied for that date rather than for today.
 pub fn local_offset_minutes(unix_secs: i64) -> i16 {
-    Local
-        .timestamp_opt(unix_secs, 0)
-        .single()
-        .and_then(|time| i16::try_from(time.offset().fix().local_minus_utc() / 60).ok())
+    Timestamp::from_second(unix_secs)
+        .ok()
+        .and_then(|at| i16::try_from(TimeZone::system().to_offset(at).seconds() / 60).ok())
         .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::Timelike;
-
     use super::*;
 
     #[test]
@@ -25,9 +23,9 @@ mod tests {
 
         let offset = i64::from(local_offset_minutes(instant));
 
-        let local = Local.timestamp_opt(instant, 0).unwrap();
+        let local = TimeZone::system().to_datetime(Timestamp::from_second(instant).unwrap());
         let shifted = instant + offset * 60;
-        assert_eq!((shifted / 3600 % 24) as u32, local.hour());
-        assert_eq!((shifted / 60 % 60) as u32, local.minute());
+        assert_eq!(shifted / 3600 % 24, i64::from(local.hour()));
+        assert_eq!(shifted / 60 % 60, i64::from(local.minute()));
     }
 }

@@ -1,5 +1,5 @@
-use chrono::NaiveDate;
 use internal::dto;
+use jiff::civil::Date;
 
 use super::response::ResultRow;
 use crate::handler::format::{format_bytes, format_count, format_timestamp};
@@ -15,7 +15,7 @@ pub fn key_of(found: &dto::Found) -> String {
     }
 }
 
-pub fn to_row(found: &dto::Found, today: NaiveDate) -> ResultRow {
+pub fn to_row(found: &dto::Found, today: Date) -> ResultRow {
     let entry = &found.entry;
     ResultRow {
         key: key_of(found),
@@ -154,8 +154,8 @@ mod tests {
         }
     }
 
-    fn today() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 10, 16).unwrap()
+    fn today() -> Date {
+        jiff::civil::date(2026, 10, 16)
     }
 
     #[test]
