@@ -42,8 +42,10 @@ pub fn is_phone_media(name: &str) -> bool {
 
 /// Videos whose first frame can be made from the start and the index of the
 /// file (`mp4::read_plan`): MP4 and QuickTime. The Matroska family (mkv, webm)
-/// keeps its index elsewhere and is not read this way.
-const PHONE_VIDEO: &[&str] = &["mp4", "m4v", "mov", "3gp"];
+/// keeps its index elsewhere and is not read this way, and a 3gp is mostly
+/// codecs (H.263, AMR) that the Mac no longer plays: each would cost a phone
+/// 60 MiB of reads for nothing.
+const PHONE_VIDEO: &[&str] = &["mp4", "m4v", "mov"];
 
 pub fn is_phone_video(name: &str) -> bool {
     extension(name).is_some_and(|ext| PHONE_VIDEO.contains(&ext.as_str()))
@@ -267,10 +269,19 @@ mod tests {
 
     #[test]
     fn mp4_and_quicktime_videos_can_have_a_frame_made_here() {
-        for name in ["a.mp4", "A.MP4", "a.m4v", "a.mov", "a.3gp"] {
+        for name in ["a.mp4", "A.MP4", "a.m4v", "a.mov"] {
             assert!(is_phone_video(name), "{name}");
         }
-        for name in ["a.mkv", "a.webm", "a.jpg", "mp4", ".mp4", "a.mp4.txt", "a"] {
+        for name in [
+            "a.3gp",
+            "a.mkv",
+            "a.webm",
+            "a.jpg",
+            "mp4",
+            ".mp4",
+            "a.mp4.txt",
+            "a",
+        ] {
             assert!(!is_phone_video(name), "{name}");
         }
     }

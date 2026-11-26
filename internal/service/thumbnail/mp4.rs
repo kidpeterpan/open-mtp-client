@@ -21,8 +21,10 @@ pub const MAX_MOOV: u64 = 24 << 20;
 /// first picture is usually a few hundred KB, a 4K one a few MB.
 pub const HEAD_TIERS: [u64; 3] = [2 << 20, 8 << 20, 32 << 20];
 /// A box before `mdat` this small is fetched (`ftyp`, a little padding); a bigger
-/// one is a hole in the sparse file, not a read.
-pub const SMALL_BOX: u64 = 1 << 20;
+/// one is a hole in the sparse file, not a read. With at most
+/// `MAX_TOP_LEVEL_BOXES` of them, `MAX_PREFIX` bounds what they cost together.
+pub const SMALL_BOX: u64 = 64 << 10;
+pub const MAX_PREFIX: u64 = MAX_TOP_LEVEL_BOXES as u64 * SMALL_BOX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mp4Error {
@@ -677,6 +679,28 @@ mod tests {
     }
 
     #[test]
+    fn the_small_boxes_before_mdat_cost_at_most_max_prefix_together() {
+        // 14 boxes of exactly the biggest "small" size, then mdat and moov.
+        let mut boxes: Vec<B> = vec![B(b"ftyp", SMALL_BOX - 8, false)];
+        boxes.extend((0..13).map(|_| B(b"free", SMALL_BOX - 8, false)));
+        boxes.push(B(b"mdat", 5000, false));
+        boxes.push(B(b"moov", 300, false));
+        let bytes = build(&boxes);
+        let layout = walk(&bytes).unwrap();
+        assert_eq!(layout.prefix.len(), 14);
+        let len = bytes.len() as u64;
+        let pieces = read_plan(&layout, len, 0).unwrap();
+        let total: u64 = pieces.iter().map(|p| p.end - p.start).sum();
+        assert_eq!(total, len, "the whole small file");
+        const { assert!(14 * SMALL_BOX <= MAX_PREFIX) };
+        // One byte bigger and it is a hole, not a read.
+        let mut boxes: Vec<B> = vec![B(b"ftyp", SMALL_BOX - 7, false)];
+        boxes.push(B(b"mdat", 5000, false));
+        boxes.push(B(b"moov", 300, false));
+        assert!(walk(&build(&boxes)).unwrap().prefix.is_empty());
+    }
+
+    #[test]
     fn what_a_plan_reads_is_always_bounded() {
         for seed in 0..2_000u64 {
             let mut next = rng(seed);
@@ -694,7 +718,7 @@ mod tests {
             for (tier, head) in HEAD_TIERS.iter().enumerate() {
                 let pieces = read_plan(&layout, len, tier).unwrap();
                 let total: u64 = pieces.iter().map(|p| p.end - p.start).sum();
-                assert!(total <= MAX_MOOV + head + 16 + 28, "seed {seed}");
+                assert!(total <= MAX_MOOV + head + 16 + MAX_PREFIX, "seed {seed}");
                 for pair in pieces.windows(2) {
                     assert!(pair[0].end < pair[1].start, "seed {seed}: sorted, merged");
                 }

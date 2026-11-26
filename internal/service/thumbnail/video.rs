@@ -9,7 +9,8 @@
 
 use crate::dto::Thumbnail;
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 /// How long the decoder gets for one frame.
@@ -22,18 +23,55 @@ pub fn first_frame(path: &Path, timeout: Duration) -> Option<Thumbnail> {
     with_deadline(timeout, move || decode(&path)).flatten()
 }
 
+/// Threads left running past their deadline, and the most there may be: a
+/// decoder stuck on a bad file does not come back, and a folder of them must
+/// not pile up threads. Past the limit no new work is started at all.
+static ABANDONED: AtomicUsize = AtomicUsize::new(0);
+const MOST_ABANDONED: usize = 8;
+
 /// Runs `work` on its own thread. `None` when it has not answered within
-/// `timeout`; the thread is left to finish and its answer is dropped.
+/// `timeout` (the thread is left to finish and its answer is dropped), or when
+/// too many earlier ones are still stuck.
 pub fn with_deadline<T: Send + 'static>(
     timeout: Duration,
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Option<T> {
+    with_deadline_counting(&ABANDONED, MOST_ABANDONED, timeout, work)
+}
+
+/// `with_deadline` with its own count of abandoned threads, so a test can fill it.
+fn with_deadline_counting<T: Send + 'static>(
+    abandoned: &'static AtomicUsize,
+    most: usize,
+    timeout: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    if abandoned.load(Ordering::Acquire) >= most {
+        return None;
+    }
     let (send, receive) = mpsc::channel();
+    let late = Arc::new(AtomicBool::new(false));
+    let worker_late = Arc::clone(&late);
     std::thread::spawn(move || {
+        let answer = work();
         // The receiver may be gone by now; that is the point of a deadline.
-        let _ = send.send(work());
+        let _ = send.send(answer);
+        // Gave up on, and now over: no longer stuck.
+        if worker_late.swap(true, Ordering::AcqRel) {
+            abandoned.fetch_sub(1, Ordering::AcqRel);
+        }
     });
-    receive.recv_timeout(timeout).ok()
+    match receive.recv_timeout(timeout) {
+        Ok(answer) => Some(answer),
+        Err(_) => {
+            // If the worker has not ended, count it; if it ended in the
+            // meantime it has already flipped the flag and we must not count.
+            if !late.swap(true, Ordering::AcqRel) {
+                abandoned.fetch_add(1, Ordering::AcqRel);
+            }
+            None
+        }
+    }
 }
 
 /// The decoder: AVFoundation, on a Mac. Anywhere else there is none, and no
@@ -51,15 +89,18 @@ mod av {
     use super::Thumbnail;
     use crate::dto::THUMBNAIL_SIZE;
     use av_core_foundation::{CGPoint, CGRect, CGSize};
-    use av_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext, CGImage};
+    use av_core_graphics::{
+        CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, kCGColorSpaceSRGB,
+    };
     use av_core_media::CMTime;
     use av_foundation::{AVAssetImageGenerator, AVURLAsset};
     use av_foundation_types::{NSString, NSURL};
     use av_objc2::rc::autoreleasepool;
     use std::path::Path;
 
-    /// `kCGImageAlphaPremultipliedLast`: the order `Thumbnail::rgba` is in.
-    const RGBA_PREMULTIPLIED_LAST: u32 = 1;
+    /// `kCGImageAlphaNoneSkipLast`: R, G, B and a byte nothing is stored in
+    /// (set to 255 below). A frame of a video is opaque, so it is not premultiplied.
+    const RGB_SKIP_LAST: u32 = 5;
 
     pub(super) fn decode(path: &Path) -> Option<Thumbnail> {
         autoreleasepool(|_| decode_in_pool(path))
@@ -78,26 +119,37 @@ mod av {
                 width: side,
                 height: side,
             });
-            let zero = CMTime::new(0, 1);
-            generator.setRequestedTimeToleranceBefore(zero);
-            generator.setRequestedTimeToleranceAfter(zero);
+            // The default tolerances (any frame near the time asked), not zero: a
+            // phone's clip often starts a little after 0 or after an edit.
             generator
-                .copyCGImageAtTime_actualTime_error(zero, std::ptr::null_mut())
+                .copyCGImageAtTime_actualTime_error(CMTime::new(0, 1), std::ptr::null_mut())
                 .ok()?
         };
         rgba_of(&image)
     }
 
-    /// The pixels of `image` as premultiplied RGBA, top row first.
+    /// The pixels of `image` as opaque sRGB RGBA, top row first, shrunk to fit
+    /// `THUMBNAIL_SIZE` if the decoder gave a pixel or two more.
     fn rgba_of(image: &CGImage) -> Option<Thumbnail> {
-        let width = CGImage::width(Some(image));
-        let height = CGImage::height(Some(image));
-        let side = THUMBNAIL_SIZE as usize;
-        if width == 0 || height == 0 || width > side || height > side {
+        let (full_width, full_height) = (CGImage::width(Some(image)), CGImage::height(Some(image)));
+        if full_width == 0 || full_height == 0 {
             return None;
         }
+        let side = THUMBNAIL_SIZE as usize;
+        let (width, height) = if full_width <= side && full_height <= side {
+            (full_width, full_height)
+        } else {
+            let scale = side as f64 / full_width.max(full_height) as f64;
+            (
+                ((full_width as f64 * scale).round() as usize).clamp(1, side),
+                ((full_height as f64 * scale).round() as usize).clamp(1, side),
+            )
+        };
         let mut rgba = vec![0u8; width * height * 4];
-        let space = CGColorSpace::new_device_rgb()?;
+        // sRGB, not the device's: a wide-gamut clip is shown as the rest of the app shows colour.
+        // SAFETY: a constant that Core Graphics defines.
+        let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))
+            .or_else(CGColorSpace::new_device_rgb)?;
         // SAFETY: `rgba` outlives `context`, which is dropped before it is read,
         // and is exactly `height` rows of `width * 4` bytes.
         let context = unsafe {
@@ -108,7 +160,7 @@ mod av {
                 8,
                 width * 4,
                 Some(&space),
-                RGBA_PREMULTIPLIED_LAST,
+                RGB_SKIP_LAST,
             )
         }?;
         let rect = CGRect {
@@ -120,6 +172,9 @@ mod av {
         };
         CGContext::draw_image(Some(&context), rect, Some(image));
         drop(context);
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
         Some(Thumbnail {
             width: u32::try_from(width).ok()?,
             height: u32::try_from(height).ok()?,
@@ -325,6 +380,63 @@ mod tests {
     fn a_missing_file_has_no_frame() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(first_frame(&dir.path().join("gone.mp4"), LONG), None);
+    }
+
+    #[test]
+    fn work_stuck_past_its_deadline_is_counted_and_stops_new_work_until_it_ends() {
+        static STUCK: AtomicUsize = AtomicUsize::new(0);
+        let release = Arc::new(AtomicBool::new(false));
+        let stuck = |release: Arc<AtomicBool>| {
+            move || {
+                while !release.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                1
+            }
+        };
+        let wait = Duration::from_millis(30);
+
+        assert_eq!(
+            with_deadline_counting(&STUCK, 2, wait, stuck(Arc::clone(&release))),
+            None
+        );
+        assert_eq!(
+            with_deadline_counting(&STUCK, 2, wait, stuck(Arc::clone(&release))),
+            None
+        );
+        assert_eq!(STUCK.load(Ordering::SeqCst), 2);
+        // Full: this is refused without starting anything, so it cannot answer.
+        let started = Instant::now();
+        assert_eq!(
+            with_deadline_counting(&STUCK, 2, Duration::from_secs(5), || 7),
+            None
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+
+        release.store(true, Ordering::Release);
+        for _ in 0..200 {
+            if STUCK.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(STUCK.load(Ordering::SeqCst), 0, "ended: no longer counted");
+        assert_eq!(
+            with_deadline_counting(&STUCK, 2, Duration::from_secs(5), || 7),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn work_that_ends_in_time_is_never_counted() {
+        static QUICK: AtomicUsize = AtomicUsize::new(0);
+        for _ in 0..20 {
+            assert_eq!(
+                with_deadline_counting(&QUICK, 1, Duration::from_secs(5), || 1),
+                Some(1)
+            );
+        }
+        assert_eq!(QUICK.load(Ordering::SeqCst), 0);
     }
 
     #[test]

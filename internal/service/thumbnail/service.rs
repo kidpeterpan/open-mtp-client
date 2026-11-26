@@ -22,6 +22,9 @@ const MAX_PHONE_THUMBNAIL: usize = 1024 * 1024;
 /// Decodes running at once; each may use up to the decoder's memory limit.
 const DECODES_AT_ONCE: usize = 2;
 static DECODES: Semaphore = Semaphore::const_new(DECODES_AT_ONCE);
+/// Mac videos decoded at once, apart from pictures: a clip the decoder is stuck
+/// on holds its place for the whole deadline and must not hold up every photo.
+static VIDEO_DECODES: Semaphore = Semaphore::const_new(DECODES_AT_ONCE);
 
 /// Small previews for the grid view.
 pub struct Service {
@@ -130,9 +133,9 @@ impl Service {
             session.capabilities().supports_partial_download,
         ) {
             Fallback::Video => {
+                let storage = &storage;
                 phone_video::first_frame_of(size_bytes, |offset, len| {
-                    self.device
-                        .ask(epoch, read_part(&storage, handle, offset, len))
+                    self.read_video_part(epoch, storage, handle, offset, len)
                 })
                 .await
             }
@@ -146,6 +149,25 @@ impl Service {
             },
             Fallback::Nothing => Ok(None),
         }
+    }
+
+    /// One request for a video's bytes. Queued behind other videos while the
+    /// phone went silent, the session it would be asked on has been dropped since:
+    /// it ends at once instead of waiting out its own limit on it.
+    async fn read_video_part(
+        &self,
+        epoch: u64,
+        storage: &Storage,
+        handle: ObjectHandle,
+        offset: u64,
+        len: u32,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        if self.device.epoch() != epoch {
+            return Err(Error::Timeout);
+        }
+        self.device
+            .ask(epoch, read_part(storage, handle, offset, len))
+            .await
     }
 
     /// A preview of a Mac picture, or of a HEIC photo, video or PDF via
@@ -185,7 +207,7 @@ impl Service {
 /// a couple at a time like any other decode; `None` for a file that is no
 /// video or takes more than `video::FRAME_TIMEOUT`.
 async fn av_frame(path: &str) -> Option<Thumbnail> {
-    let _permit = DECODES.acquire().await.ok()?;
+    let _permit = VIDEO_DECODES.acquire().await.ok()?;
     let path = PathBuf::from(path);
     tokio::task::spawn_blocking(move || video::first_frame(&path, video::FRAME_TIMEOUT))
         .await
@@ -571,11 +593,13 @@ mod tests {
     /// `fallback_for` as a table: what to try when the phone has no thumbnail.
     #[test]
     fn what_to_try_when_the_phone_has_no_thumbnail() {
-        let cases: [(&str, u64, bool, Fallback); 14] = [
+        let cases: [(&str, u64, bool, Fallback); 16] = [
             ("a.mp4", 5 * MIB, true, Fallback::Video),
             ("A.MOV", 5 * MIB, true, Fallback::Video),
             ("a.m4v", 5 * MIB, true, Fallback::Video),
-            ("a.3gp", 5 * MIB, true, Fallback::Video),
+            ("a.3gp", 5 * MIB, true, Fallback::Nothing),
+            ("a.mp4", 0xFFFF_FFFF, true, Fallback::Nothing),
+            ("a.mp4", 0x1_0000_0000, true, Fallback::Video),
             ("a.mp4", 5 * MIB, false, Fallback::Nothing),
             ("a.mp4", 0, true, Fallback::Nothing),
             ("a.mp4", 2 << 40, true, Fallback::Nothing),
@@ -834,7 +858,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thumbnails_from_a_silent_phone_end_as_a_timeout_for_videos_too() {
+    async fn a_phone_that_goes_silent_during_a_video_ends_as_a_timeout() {
         let limit = std::time::Duration::from_millis(150);
         let phone = VideoPhone::build(
             &[("a.mp4", video("moov_at_end.mp4"))],
@@ -844,11 +868,36 @@ mod tests {
         )
         .await;
         let entry = phone.entry("a.mp4");
+        let (session, epoch) = phone.device.session_at().await.unwrap();
+        let storage = phone
+            .device
+            .ask(epoch, session.storage(StorageId(phone.storage_id)))
+            .await
+            .unwrap();
+        let handle = ObjectHandle(entry.id);
+        let storage = &storage;
+        let service = &phone.service;
+        let read = |offset, len| service.read_video_part(epoch, storage, handle, offset, len);
+        // The phone answers the first request and then falls silent.
+        let first = read(0, 16).await;
+        assert!(matches!(first, Ok(Some(_))), "{first:?}");
         let _silence = crate::service::testing::silence(&phone.device, phone.storage_id).await;
+        let started = std::time::Instant::now();
 
-        let found = phone.service.phone(phone.storage_id, "/", &entry).await;
+        let found = phone_video::first_frame_of(entry.size_bytes, read).await;
 
         assert_eq!(found, Err(Error::Timeout));
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+
+        // A video queued behind it, holding the same session: that session is gone, so
+        // it ends at once instead of waiting out its own limit on it.
+        let started = std::time::Instant::now();
+        assert_eq!(read(0, 16).await, Err(Error::Timeout));
+        assert!(
+            started.elapsed() < limit / 3,
+            "{:?} (the limit is {limit:?})",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]

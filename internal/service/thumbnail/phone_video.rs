@@ -18,13 +18,18 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
-use super::mp4::{HEAD_TIERS, HEADER_PEEK, Layout, Walker, missing, read_plan};
+use super::mp4::{
+    HEAD_TIERS, HEADER_PEEK, Layout, MAX_MOOV, MAX_PREFIX, Walker, missing, read_plan,
+};
 use super::sparse::{Piece, write_sparse};
 use super::video;
 use crate::dto::{Error, Thumbnail};
 
 /// A video claiming to be bigger than this is not tried.
 pub(super) const MAX_VIDEO_BYTES: u64 = 1 << 40;
+/// The most one `read_exact` is ever asked for: the biggest head, the biggest
+/// `moov` and the small boxes, with a little room.
+const MAX_READ: usize = (MAX_MOOV + HEAD_TIERS[HEAD_TIERS.len() - 1] + MAX_PREFIX) as usize;
 /// One request to the phone: small enough to notice a lost phone between two.
 const CHUNK: u64 = 1 << 20;
 /// Videos made at once. The phone has one session and a video takes a dozen
@@ -39,9 +44,13 @@ static NOW: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new
 pub(super) static HIGH_WATER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// What MTP says for a file of 4 GiB or more: its size field is 32 bits, so
+/// the real size is not known here, and the box walk would be lied to.
+const SIZE_NOT_KNOWN: u64 = 0xFFFF_FFFF;
+
 /// A video of `size` bytes, as the phone claims, is worth a try.
 pub(super) fn is_worth_trying(size: u64) -> bool {
-    (1..=MAX_VIDEO_BYTES).contains(&size)
+    (1..=MAX_VIDEO_BYTES).contains(&size) && size != SIZE_NOT_KNOWN
 }
 
 /// The first frame of a video of `size` bytes. `read(offset, len)` asks the
@@ -101,7 +110,9 @@ where
             Arc::make_mut(&mut pieces).push((range.start, bytes));
             have.push(range);
         }
-        let path = folder.path().join(format!("tier-{tier}.mp4"));
+        // One file at a time on the disk: the last tier's is made again, bigger.
+        let path = folder.path().join("video.mp4");
+        let _ = std::fs::remove_file(&path);
         if let Some(thumbnail) = frame_from(path, size, Arc::clone(&pieces)).await {
             return Ok(Some(thumbnail));
         }
@@ -137,7 +148,8 @@ where
     R: Fn(u64, u32) -> Fut,
     Fut: Future<Output = Result<Option<Vec<u8>>, Error>>,
 {
-    let mut out = Vec::new();
+    // Callers ask for what `read_plan` allows, never more than a few tens of MiB.
+    let mut out = Vec::with_capacity(usize::try_from(len).unwrap_or(MAX_READ).min(MAX_READ));
     while (out.len() as u64) < len {
         let want = CHUNK.min(len - out.len() as u64);
         let Some(bytes) = read(offset + out.len() as u64, want as u32).await? else {
@@ -207,6 +219,10 @@ mod tests {
         bytes: Vec<u8>,
         asked: Mutex<Vec<(u64, u32)>>,
         fail_after: Option<usize>,
+        /// From this request on the phone refuses (about this file, not about itself).
+        refuse_from: Option<usize>,
+        /// Each answer takes this long.
+        slow: Option<std::time::Duration>,
     }
 
     impl Phone {
@@ -216,15 +232,24 @@ mod tests {
                 bytes,
                 asked: Mutex::new(Vec::new()),
                 fail_after: None,
+                refuse_from: None,
+                slow: None,
             }
         }
 
         async fn read(&self, offset: u64, len: u32) -> Result<Option<Vec<u8>>, Error> {
+            if let Some(slow) = self.slow {
+                tokio::time::sleep(slow).await;
+            }
             let mut asked = self.asked.lock().unwrap();
             if self.fail_after.is_some_and(|n| asked.len() >= n) {
                 return Err(Error::Timeout);
             }
+            let refuse = self.refuse_from.is_some_and(|n| asked.len() >= n);
             asked.push((offset, len));
+            if refuse {
+                return Ok(None);
+            }
             let start = (offset as usize).min(self.bytes.len());
             let end = (start + len as usize).min(self.bytes.len());
             Ok(Some(self.bytes[start..end].to_vec()))
@@ -337,6 +362,41 @@ mod tests {
             5,
             "it got as far as the start of the picture data"
         );
+        assert_eq!(left_behind(&phone), 0);
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_refuses_the_file_midway_gets_none_and_leaves_no_temp_folder() {
+        // Refusing at the walk, at the start of the picture data and at the index.
+        for refuse_from in [1, 3, 5] {
+            let mut phone = Phone::new(padded_at_end(8 << 20));
+            phone.refuse_from = Some(refuse_from);
+            assert_eq!(
+                phone.frame().await.unwrap(),
+                None,
+                "from request {refuse_from}"
+            );
+            assert_eq!(
+                phone.requests(),
+                refuse_from + 1,
+                "it stops at the first refusal"
+            );
+            assert_eq!(left_behind(&phone), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_video_dropped_while_its_data_is_coming_leaves_nothing_and_frees_the_queue() {
+        let mut phone = Phone::new(padded_at_end(8 << 20));
+        phone.slow = Some(std::time::Duration::from_millis(20));
+        let gave_up =
+            tokio::time::timeout(std::time::Duration::from_millis(100), phone.frame()).await;
+        assert!(gave_up.is_err(), "still reading when it was dropped");
+        assert_eq!(left_behind(&phone), 0, "the folder went with it");
+
+        // The one place in line is free again: the next video is made.
+        phone.slow = None;
+        assert!(phone.frame().await.unwrap().is_some());
         assert_eq!(left_behind(&phone), 0);
     }
 

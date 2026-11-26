@@ -49,7 +49,7 @@ av_objc2 = { package = "objc2", version = "0.6" }
 av-foundation = { package = "objc2-av-foundation", version = "0.3", default-features = false, features = ["AVAsset", "AVAssetImageGenerator", "objc2-core-foundation", "objc2-core-media", "objc2-core-graphics"] }
 av-core-media = { package = "objc2-core-media", version = "0.3", default-features = false, features = ["CMTime"] }
 av-core-graphics = { package = "objc2-core-graphics", version = "0.3", default-features = false, features = ["CGImage", "CGBitmapContext", "CGColorSpace", "CGContext"] }
-av-core-foundation = { package = "objc2-core-foundation", version = "0.3", default-features = false, features = ["CFCGTypes"] }
+av-core-foundation = { package = "objc2-core-foundation", version = "0.3", default-features = false, features = ["CFCGTypes", "CFString"] }
 av-foundation-types = { package = "objc2-foundation", version = "0.3", default-features = false, features = ["NSURL", "NSString", "NSError", "NSDictionary"] }
 
 # macOS keeps every codegen unit's object file beside a debug binary
