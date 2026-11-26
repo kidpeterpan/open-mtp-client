@@ -1,4 +1,6 @@
 mod disk;
+#[cfg(test)]
+mod fixtures;
 mod mapper;
 mod service;
 
