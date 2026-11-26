@@ -7,6 +7,8 @@ use tokio::sync::Semaphore;
 
 use super::disk::{self, DiskCache};
 use super::mapper;
+use super::phone_video;
+use super::video;
 use crate::dto::{Entry, Error, Thumbnail};
 use crate::service::{device, local};
 
@@ -20,6 +22,9 @@ const MAX_PHONE_THUMBNAIL: usize = 1024 * 1024;
 /// Decodes running at once; each may use up to the decoder's memory limit.
 const DECODES_AT_ONCE: usize = 2;
 static DECODES: Semaphore = Semaphore::const_new(DECODES_AT_ONCE);
+/// Mac videos decoded at once, apart from pictures: a clip the decoder is stuck
+/// on holds its place for the whole deadline and must not hold up every photo.
+static VIDEO_DECODES: Semaphore = Semaphore::const_new(DECODES_AT_ONCE);
 
 /// Small previews for the grid view.
 pub struct Service {
@@ -121,18 +126,48 @@ impl Service {
                 }
             }
         }
-        // The reported size is the phone's word; the read below enforces it.
-        if !mapper::is_decodable(name) || size_bytes > MAX_PHONE_FETCH {
-            return Ok(None);
+        // The reported size is the phone's word; the reads below enforce it.
+        match fallback_for(
+            name,
+            size_bytes,
+            session.capabilities().supports_partial_download,
+        ) {
+            Fallback::Video => {
+                let storage = &storage;
+                phone_video::first_frame_of(size_bytes, |offset, len| {
+                    self.read_video_part(epoch, storage, handle, offset, len)
+                })
+                .await
+            }
+            Fallback::Still => match self
+                .device
+                .ask(epoch, read_at_most(&storage, handle, MAX_PHONE_FETCH))
+                .await?
+            {
+                Some(bytes) => Ok(decode(bytes).await),
+                None => Ok(None),
+            },
+            Fallback::Nothing => Ok(None),
         }
-        match self
-            .device
-            .ask(epoch, read_at_most(&storage, handle, MAX_PHONE_FETCH))
-            .await?
-        {
-            Some(bytes) => Ok(decode(bytes).await),
-            None => Ok(None),
+    }
+
+    /// One request for a video's bytes. Queued behind other videos while the
+    /// phone went silent, the session it would be asked on has been dropped since:
+    /// it ends at once instead of waiting out its own limit on it.
+    async fn read_video_part(
+        &self,
+        epoch: u64,
+        storage: &Storage,
+        handle: ObjectHandle,
+        offset: u64,
+        len: u32,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        if self.device.epoch() != epoch {
+            return Err(Error::Timeout);
         }
+        self.device
+            .ask(epoch, read_part(storage, handle, offset, len))
+            .await
     }
 
     /// A preview of a Mac picture, or of a HEIC photo, video or PDF via
@@ -142,7 +177,9 @@ impl Service {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let previewable = mapper::is_quick_look(&name) || mapper::is_decodable(&name);
+        let previewable = mapper::is_av_video(&name)
+            || mapper::is_quick_look(&name)
+            || mapper::is_decodable(&name);
         if !previewable {
             return Ok(None);
         }
@@ -150,6 +187,9 @@ impl Service {
         let metadata = tokio::fs::metadata(path)
             .await
             .map_err(|err| local::mapper::to_error(&err, path))?;
+        if mapper::is_av_video(&name) {
+            return Ok(av_frame(path).await);
+        }
         if mapper::is_quick_look(&name) {
             return Ok(quick_look(path, &name, QUICK_LOOK_TIMEOUT).await);
         }
@@ -161,6 +201,18 @@ impl Service {
             .map_err(|err| local::mapper::to_error(&err, path))?;
         Ok(decode(bytes).await)
     }
+}
+
+/// The first frame of the Mac video at `path`, decoded off the async threads
+/// a couple at a time like any other decode; `None` for a file that is no
+/// video or takes more than `video::FRAME_TIMEOUT`.
+async fn av_frame(path: &str) -> Option<Thumbnail> {
+    let _permit = VIDEO_DECODES.acquire().await.ok()?;
+    let path = PathBuf::from(path);
+    tokio::task::spawn_blocking(move || video::first_frame(&path, video::FRAME_TIMEOUT))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// How long Quick Look gets for one preview: `qlmanage` can hang for good on
@@ -201,6 +253,47 @@ async fn quick_look(path: &str, name: &str, timeout: std::time::Duration) -> Opt
     };
     let _ = tokio::fs::remove_dir_all(&folder).await;
     decode(bytes?).await
+}
+
+/// What to make a thumbnail from when the phone has none of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fallback {
+    /// The first frame of an MP4 or QuickTime video, from its start and index.
+    Video,
+    /// A small picture, fetched whole and shrunk here.
+    Still,
+    Nothing,
+}
+
+/// `size_bytes` is what the phone says the file is; `partial_reads` is whether
+/// it can send part of a file (a video is never fetched whole).
+fn fallback_for(name: &str, size_bytes: u64, partial_reads: bool) -> Fallback {
+    if mapper::is_phone_video(name) {
+        if partial_reads && phone_video::is_worth_trying(size_bytes) {
+            Fallback::Video
+        } else {
+            Fallback::Nothing
+        }
+    } else if mapper::is_decodable(name) && size_bytes <= MAX_PHONE_FETCH {
+        Fallback::Still
+    } else {
+        Fallback::Nothing
+    }
+}
+
+/// `len` bytes of a phone file at `offset`; `None` when the phone won't send
+/// them (about this file, not about the phone), an error when the phone is gone.
+async fn read_part(
+    storage: &Storage,
+    handle: ObjectHandle,
+    offset: u64,
+    len: u32,
+) -> Result<Option<Vec<u8>>, mtp_rs::Error> {
+    match storage.read_range(handle, offset, len).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if crate::service::failures::is_about_one_object(&err) => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 /// The start of a phone file, or `None` if it is longer than `cap` (or the
@@ -493,6 +586,320 @@ mod tests {
         assert_eq!(result, Err(Error::NotConnected));
     }
 
+    // ---- Videos on a phone that gives no thumbnail of its own ----
+
+    const MIB: u64 = 1 << 20;
+
+    /// `fallback_for` as a table: what to try when the phone has no thumbnail.
+    #[test]
+    fn what_to_try_when_the_phone_has_no_thumbnail() {
+        let cases: [(&str, u64, bool, Fallback); 16] = [
+            ("a.mp4", 5 * MIB, true, Fallback::Video),
+            ("A.MOV", 5 * MIB, true, Fallback::Video),
+            ("a.m4v", 5 * MIB, true, Fallback::Video),
+            ("a.3gp", 5 * MIB, true, Fallback::Nothing),
+            ("a.mp4", 0xFFFF_FFFF, true, Fallback::Nothing),
+            ("a.mp4", 0x1_0000_0000, true, Fallback::Video),
+            ("a.mp4", 5 * MIB, false, Fallback::Nothing),
+            ("a.mp4", 0, true, Fallback::Nothing),
+            ("a.mp4", 2 << 40, true, Fallback::Nothing),
+            ("a.mkv", 5 * MIB, true, Fallback::Nothing),
+            ("a.webm", 5 * MIB, true, Fallback::Nothing),
+            ("a.jpg", MIB, true, Fallback::Still),
+            ("a.jpg", MIB, false, Fallback::Still),
+            ("a.jpg", 9 * MIB, true, Fallback::Nothing),
+            ("a.heic", MIB, true, Fallback::Nothing),
+            ("notes.txt", 10, true, Fallback::Nothing),
+        ];
+        for (name, size, partial, expected) in cases {
+            assert_eq!(
+                fallback_for(name, size, partial),
+                expected,
+                "{name} {size} {partial}"
+            );
+        }
+        assert_eq!(
+            fallback_for("a.mp4", 1 << 40, true),
+            Fallback::Video,
+            "a terabyte is the limit"
+        );
+    }
+
+    /// A phone holding `files`, its service, and the entries by name.
+    struct VideoPhone {
+        _dir: tempfile::TempDir,
+        device: Arc<device::Service>,
+        service: Service,
+        storage_id: u64,
+        entries: Vec<Entry>,
+    }
+
+    impl VideoPhone {
+        async fn new(files: &[(&str, Vec<u8>)], partial_reads: bool) -> Self {
+            Self::build(files, partial_reads, None, None).await
+        }
+
+        async fn build(
+            files: &[(&str, Vec<u8>)],
+            partial_reads: bool,
+            cache: Option<&Path>,
+            limit: Option<std::time::Duration>,
+        ) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            for (name, bytes) in files {
+                fs::write(dir.path().join(name), bytes).unwrap();
+            }
+            let mut phone = crate::service::testing::virtual_phone(dir.path());
+            phone.partial_reads = partial_reads;
+            let device = device::Service::new(device::Source::Virtual(phone));
+            let device = Arc::new(match limit {
+                Some(limit) => device.answering_within(limit),
+                None => device,
+            });
+            device.connect().await.unwrap();
+            let storage_id = device.storages().await.unwrap()[0].id;
+            let entries = explorer::Service::new(Arc::clone(&device))
+                .list(storage_id, "/", false)
+                .await
+                .unwrap();
+            let mut service = Service::new(Arc::clone(&device));
+            if let Some(cache) = cache {
+                service = service.with_disk_cache(cache.to_path_buf(), 8 * MIB);
+            }
+            Self {
+                _dir: dir,
+                device,
+                service,
+                storage_id,
+                entries,
+            }
+        }
+
+        fn entry(&self, name: &str) -> Entry {
+            self.entries
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap()
+                .clone()
+        }
+
+        /// The thumbnail of `entry`, and how many requests the phone heard for it.
+        async fn ask(&self, entry: &Entry) -> (Result<Option<Thumbnail>, Error>, usize) {
+            let before = self.device.activity().times_heard();
+            let found = self.service.phone(self.storage_id, "/", entry).await;
+            (found, self.device.activity().times_heard() - before)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn red_top_left(thumb: &Thumbnail) -> bool {
+        let at =
+            ((thumb.height as usize / 4) * thumb.width as usize + thumb.width as usize / 4) * 4;
+        thumb.rgba[at] > 200 && thumb.rgba[at + 1] < 90 && thumb.rgba[at + 2] < 90
+    }
+
+    fn video(name: &str) -> Vec<u8> {
+        crate::service::thumbnail::fixtures::bytes(name)
+    }
+
+    /// The requests a file the phone gives nothing for takes (just the thumbnail ask).
+    async fn baseline_asks() -> usize {
+        let phone = VideoPhone::new(&[("clip.mkv", video("moov_at_end.mp4"))], true).await;
+        let (found, asks) = phone.ask(&phone.entry("clip.mkv")).await;
+        assert_eq!(found, Ok(None));
+        asks
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_phone_video_without_a_phone_thumbnail_gets_its_first_frame() {
+        let big = crate::service::thumbnail::fixtures::padded_at_end(30 << 20);
+        let phone = VideoPhone::new(
+            &[
+                ("a.mp4", big),
+                ("b.mp4", video("faststart.mp4")),
+                ("c.mp4", video("portrait.mp4")),
+            ],
+            true,
+        )
+        .await;
+
+        let (a, asks) = phone.ask(&phone.entry("a.mp4")).await;
+        let a = a.unwrap().expect("a frame");
+        assert!(red_top_left(&a));
+        assert!(
+            asks <= 12 + baseline_asks().await,
+            "{asks} requests for a 30 MiB video"
+        );
+
+        let b = phone
+            .ask(&phone.entry("b.mp4"))
+            .await
+            .0
+            .unwrap()
+            .expect("a frame");
+        assert!(red_top_left(&b));
+        let c = phone
+            .ask(&phone.entry("c.mp4"))
+            .await
+            .0
+            .unwrap()
+            .expect("a frame");
+        assert!(c.height > c.width && red_top_left(&c), "upright");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_second_look_at_a_cached_video_asks_the_phone_nothing() {
+        let cache = tempfile::tempdir().unwrap();
+        let phone = VideoPhone::build(
+            &[("a.mp4", video("moov_at_end.mp4"))],
+            true,
+            Some(cache.path()),
+            None,
+        )
+        .await;
+        let entry = phone.entry("a.mp4");
+
+        let (first, asks) = phone.ask(&entry).await;
+        assert!(asks > 0);
+        let (second, asks) = phone.ask(&entry).await;
+
+        assert_eq!(asks, 0);
+        let (first, second) = (first.unwrap().unwrap(), second.unwrap().unwrap());
+        assert_eq!((first.width, first.height), (second.width, second.height));
+        assert!(red_top_left(&second), "the picture that was kept");
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_cannot_read_part_of_a_file_gets_no_video_frame_and_no_request() {
+        let baseline = baseline_asks().await;
+        let phone = VideoPhone::new(&[("a.mp4", video("moov_at_end.mp4"))], false).await;
+
+        let (found, asks) = phone.ask(&phone.entry("a.mp4")).await;
+
+        assert_eq!(found, Ok(None));
+        assert_eq!(asks, baseline, "only the thumbnail ask");
+    }
+
+    #[tokio::test]
+    async fn mkv_webm_and_non_video_files_are_as_before() {
+        let baseline = baseline_asks().await;
+        let phone = VideoPhone::new(
+            &[
+                ("a.mkv", video("moov_at_end.mp4")),
+                ("a.webm", video("moov_at_end.mp4")),
+                ("a.heic", video("moov_at_end.mp4")),
+            ],
+            true,
+        )
+        .await;
+        for name in ["a.mkv", "a.webm", "a.heic"] {
+            let (found, asks) = phone.ask(&phone.entry(name)).await;
+            assert_eq!(found, Ok(None), "{name}");
+            assert_eq!(asks, baseline, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_video_that_is_not_a_video_gets_none() {
+        let phone = VideoPhone::new(
+            &[
+                ("noise.mp4", vec![9; 5000]),
+                ("empty.mp4", Vec::new()),
+                ("png.mov", mapper::png(40, 40)),
+            ],
+            true,
+        )
+        .await;
+        for name in ["noise.mp4", "empty.mp4", "png.mov"] {
+            assert_eq!(phone.ask(&phone.entry(name)).await.0, Ok(None), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_video_claiming_more_than_a_terabyte_is_refused_untried() {
+        let baseline = baseline_asks().await;
+        let phone = VideoPhone::new(&[("a.mp4", video("moov_at_end.mp4"))], true).await;
+        let mut entry = phone.entry("a.mp4");
+        entry.size_bytes = (1 << 40) + 1;
+
+        let (found, asks) = phone.ask(&entry).await;
+
+        assert_eq!(found, Ok(None));
+        assert_eq!(asks, baseline);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn videos_asked_for_together_each_get_their_frame() {
+        let phone = Arc::new(
+            VideoPhone::new(
+                &[
+                    ("a.mp4", video("moov_at_end.mp4")),
+                    ("b.mp4", video("faststart.mp4")),
+                    ("c.mp4", video("portrait.mp4")),
+                    ("d.mov", video("moov_at_end.mp4")),
+                ],
+                true,
+            )
+            .await,
+        );
+        let asks: Vec<_> = ["a.mp4", "b.mp4", "c.mp4", "d.mov"]
+            .into_iter()
+            .map(|name| {
+                let phone = Arc::clone(&phone);
+                tokio::spawn(async move { phone.ask(&phone.entry(name)).await.0 })
+            })
+            .collect();
+        for ask in asks {
+            assert!(ask.await.unwrap().unwrap().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_goes_silent_during_a_video_ends_as_a_timeout() {
+        let limit = std::time::Duration::from_millis(150);
+        let phone = VideoPhone::build(
+            &[("a.mp4", video("moov_at_end.mp4"))],
+            true,
+            None,
+            Some(limit),
+        )
+        .await;
+        let entry = phone.entry("a.mp4");
+        let (session, epoch) = phone.device.session_at().await.unwrap();
+        let storage = phone
+            .device
+            .ask(epoch, session.storage(StorageId(phone.storage_id)))
+            .await
+            .unwrap();
+        let handle = ObjectHandle(entry.id);
+        let storage = &storage;
+        let service = &phone.service;
+        let read = |offset, len| service.read_video_part(epoch, storage, handle, offset, len);
+        // The phone answers the first request and then falls silent.
+        let first = read(0, 16).await;
+        assert!(matches!(first, Ok(Some(_))), "{first:?}");
+        let _silence = crate::service::testing::silence(&phone.device, phone.storage_id).await;
+        let started = std::time::Instant::now();
+
+        let found = phone_video::first_frame_of(entry.size_bytes, read).await;
+
+        assert_eq!(found, Err(Error::Timeout));
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+
+        // A video queued behind it, holding the same session: that session is gone, so
+        // it ends at once instead of waiting out its own limit on it.
+        let started = std::time::Instant::now();
+        assert_eq!(read(0, 16).await, Err(Error::Timeout));
+        assert!(
+            started.elapsed() < limit / 3,
+            "{:?} (the limit is {limit:?})",
+            started.elapsed()
+        );
+    }
+
     #[tokio::test]
     async fn mac_pictures_get_thumbnails_and_other_files_none() {
         let dir = tempfile::tempdir().unwrap();
@@ -623,6 +1030,112 @@ mod tests {
 
         assert_eq!(thumbnail, None);
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    // ---- Videos on the Mac: the same frame, not Quick Look ----
+
+    #[cfg(target_os = "macos")]
+    fn mac_video(name: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        fs::write(&path, crate::service::thumbnail::fixtures::bytes(name)).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn mac_service(dir: &Path) -> Service {
+        Service::new(Arc::new(device::Service::new(virtual_source(dir))))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_mac_video_gets_an_avfoundation_frame_not_quick_look() {
+        // Quick Look makes its own size and shape; only the decoder here makes this exactly.
+        for name in ["moov_at_end.mp4", "faststart.mp4", "portrait.mp4"] {
+            let (dir, path) = mac_video(name);
+            let expected = super::super::video::first_frame(
+                Path::new(&path),
+                std::time::Duration::from_secs(20),
+            );
+
+            let thumbnail = mac_service(dir.path()).mac(&path).await.unwrap();
+
+            assert!(expected.is_some(), "{name}");
+            assert_eq!(thumbnail, expected, "{name}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_mac_portrait_video_is_upright() {
+        let (dir, path) = mac_video("portrait.mp4");
+        let thumbnail = mac_service(dir.path())
+            .mac(&path)
+            .await
+            .unwrap()
+            .expect("a frame");
+        assert!(thumbnail.height > thumbnail.width);
+        assert!(red_top_left(&thumbnail));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_damaged_mac_video_has_no_thumbnail_and_nothing_hangs() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("fake.mov", b"not a movie".to_vec()),
+            ("empty.mp4", Vec::new()),
+            ("cut.m4v", video("moov_at_end.mp4")[..300].to_vec()),
+        ] {
+            fs::write(dir.path().join(name), bytes).unwrap();
+        }
+        let service = mac_service(dir.path());
+        let started = std::time::Instant::now();
+
+        for name in ["fake.mov", "empty.mp4", "cut.m4v"] {
+            let path = dir.path().join(name).to_string_lossy().into_owned();
+            assert_eq!(service.mac(&path).await, Ok(None), "{name}");
+        }
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_mac_video_is_path_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.mp4").to_string_lossy().into_owned();
+        let started = std::time::Instant::now();
+
+        let thumbnail = mac_service(dir.path()).mac(&path).await;
+
+        assert_eq!(thumbnail, Err(Error::PathNotFound(path)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn mac_videos_asked_for_together_each_get_their_frame() {
+        let (dir, _) = mac_video("moov_at_end.mp4");
+        let service = Arc::new(mac_service(dir.path()));
+        let path = dir
+            .path()
+            .join("moov_at_end.mp4")
+            .to_string_lossy()
+            .into_owned();
+        let asked: Vec<_> = (0..8)
+            .map(|_| {
+                let (service, path) = (Arc::clone(&service), path.clone());
+                tokio::spawn(async move { service.mac(&path).await })
+            })
+            .collect();
+        for ask in asked {
+            assert!(ask.await.unwrap().unwrap().is_some());
+        }
     }
 
     #[tokio::test]

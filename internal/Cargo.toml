@@ -33,6 +33,12 @@ block2.workspace = true
 objc2-foundation.workspace = true
 objc2-app-kit.workspace = true
 objc2-user-notifications.workspace = true
+av_objc2.workspace = true
+av-foundation.workspace = true
+av-core-media.workspace = true
+av-core-graphics.workspace = true
+av-core-foundation.workspace = true
+av-foundation-types.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

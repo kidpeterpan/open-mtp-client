@@ -7,8 +7,8 @@ use crate::dto::{THUMBNAIL_SIZE, Thumbnail};
 const DECODABLE: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff"];
 /// Media a phone may have its own thumbnail for (its media index covers these).
 const PHONE_MEDIA: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "dng", "mp4", "mov", "3gp", "mkv",
-    "webm",
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "dng", "mp4", "m4v", "mov", "3gp",
+    "mkv", "webm",
 ];
 
 fn extension(name: &str) -> Option<String> {
@@ -23,7 +23,14 @@ pub fn is_decodable(name: &str) -> bool {
 }
 
 /// What macOS's Quick Look can preview that the decoder above can't.
-const QUICK_LOOK: &[&str] = &["heic", "heif", "mov", "mp4", "m4v", "dng", "pdf"];
+const QUICK_LOOK: &[&str] = &["heic", "heif", "dng", "pdf"];
+/// Videos on the Mac, whose first frame AVFoundation makes (`video.rs`): Quick
+/// Look can take a minute on a file it dislikes, this is bounded.
+const AV_VIDEO: &[&str] = &["mov", "mp4", "m4v"];
+
+pub fn is_av_video(name: &str) -> bool {
+    extension(name).is_some_and(|ext| AV_VIDEO.contains(&ext.as_str()))
+}
 
 pub fn is_quick_look(name: &str) -> bool {
     extension(name).is_some_and(|ext| QUICK_LOOK.contains(&ext.as_str()))
@@ -31,6 +38,17 @@ pub fn is_quick_look(name: &str) -> bool {
 
 pub fn is_phone_media(name: &str) -> bool {
     extension(name).is_some_and(|ext| PHONE_MEDIA.contains(&ext.as_str()))
+}
+
+/// Videos whose first frame can be made from the start and the index of the
+/// file (`mp4::read_plan`): MP4 and QuickTime. The Matroska family (mkv, webm)
+/// keeps its index elsewhere and is not read this way, and a 3gp is mostly
+/// codecs (H.263, AMR) that the Mac no longer plays: each would cost a phone
+/// 60 MiB of reads for nothing.
+const PHONE_VIDEO: &[&str] = &["mp4", "m4v", "mov"];
+
+pub fn is_phone_video(name: &str) -> bool {
+    extension(name).is_some_and(|ext| PHONE_VIDEO.contains(&ext.as_str()))
 }
 
 /// Widest or tallest image decoded; anything bigger is refused before its
@@ -222,12 +240,50 @@ mod tests {
         assert!(!is_decodable("README"));
 
         assert!(is_quick_look("IMG_0001.HEIC"));
-        assert!(is_quick_look("clip.mov"));
+        assert!(is_quick_look("scan.pdf"));
+        assert!(is_quick_look("raw.dng"));
+        assert!(
+            !is_quick_look("clip.mov"),
+            "videos have a frame made here instead"
+        );
         assert!(!is_quick_look("photo.jpg"));
+    }
+
+    #[test]
+    fn mac_mp4_and_quicktime_videos_are_decoded_here() {
+        for name in ["a.mov", "A.MP4", "a.m4v"] {
+            assert!(is_av_video(name), "{name}");
+        }
+        for name in ["a.3gp", "a.mkv", "a.heic", "a.jpg", "mov"] {
+            assert!(!is_av_video(name), "{name}");
+        }
 
         assert!(is_phone_media("clip.MP4"));
         assert!(is_phone_media("IMG_002.heic"));
         assert!(!is_phone_media("notes.txt"));
+        assert!(
+            is_phone_media("clip.m4v"),
+            "a phone may have a thumbnail for it"
+        );
+    }
+
+    #[test]
+    fn mp4_and_quicktime_videos_can_have_a_frame_made_here() {
+        for name in ["a.mp4", "A.MP4", "a.m4v", "a.mov"] {
+            assert!(is_phone_video(name), "{name}");
+        }
+        for name in [
+            "a.3gp",
+            "a.mkv",
+            "a.webm",
+            "a.jpg",
+            "mp4",
+            ".mp4",
+            "a.mp4.txt",
+            "a",
+        ] {
+            assert!(!is_phone_video(name), "{name}");
+        }
     }
 
     #[test]

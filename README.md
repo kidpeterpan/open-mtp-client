@@ -122,8 +122,8 @@ Still stuck? Open **Help > Troubleshooting**. It checks your Mac and tells you w
 | Light and dark theme | ✅ |
 | Command line tool for scripts | ✅ |
 | More languages (Thai first): Thai, Japanese, Simplified Chinese | ✅ |
+| Video thumbnails | ✅ |
 | **Next** | |
-| Video thumbnails | 🚧 |
 | Signed downloads and Homebrew | 🚧 |
 | Show the phone in Finder | 🚧 |
 | Copy phone to phone | 🚧 |
