@@ -485,11 +485,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "open-mtp-client crash report");
         assert_eq!(lines[1], "Version: 0.1.0");
-        assert!(
-            lines[2].starts_with("When: 1792000000000 (2026-10-"),
-            "{}",
-            lines[2]
-        );
+        assert_eq!(lines[2], "When: 1792000000000 (2026-10-14 17:46:40 UTC)");
         assert_eq!(lines[3], "Thread: tokio-runtime-worker");
         assert_eq!(lines[LOCATION_LINE], "Location: internal/x.rs:9:3");
         assert!(text.contains("Message:\nindex out of bounds"));

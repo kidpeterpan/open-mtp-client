@@ -87,6 +87,20 @@ mod tests {
     }
 
     #[test]
+    fn a_time_jiff_cannot_hold_shows_as_the_epoch_and_does_not_panic() {
+        let far = UNIX_EPOCH + Duration::from_secs(1_000_000_000_000);
+
+        assert_eq!(to_timestamp(far), to_timestamp(UNIX_EPOCH));
+    }
+
+    #[test]
+    fn a_time_before_1970_keeps_its_own_year() {
+        let stamp = to_timestamp(UNIX_EPOCH - Duration::from_secs(400 * 86_400));
+
+        assert_eq!((stamp.year, stamp.month), (1968, 11));
+    }
+
+    #[test]
     fn io_errors_map_to_what_the_user_can_act_on() {
         let not_found = io::Error::from(io::ErrorKind::NotFound);
         let not_dir = io::Error::from(io::ErrorKind::NotADirectory);

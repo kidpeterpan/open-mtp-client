@@ -3,7 +3,7 @@
 use internal::dto::{
     Abilities, DateRange, Day, DaySpan, FileKind, Language, ReadTiming, Timestamp, UsbSpeed,
 };
-use jiff::civil::Date;
+use jiff::civil::{Date, DateTime};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp as Instant};
 
@@ -123,11 +123,18 @@ pub fn slow_link_note(link: Option<UsbSpeed>) -> Option<String> {
 
 /// Today on the Mac.
 pub fn local_today() -> Date {
-    TimeZone::system().to_datetime(Instant::now()).date()
+    local_datetime(Instant::now()).date()
 }
 
-/// The calendar day a device's year, month and day name; `None` when they
-/// are not a real day (a phone can write anything).
+pub fn local_datetime(at: Instant) -> DateTime {
+    TimeZone::system().to_datetime(at)
+}
+
+pub fn local_datetime_of_ms(at_ms: u64) -> Option<DateTime> {
+    let at = Instant::from_millisecond(i64::try_from(at_ms).ok()?).ok()?;
+    Some(local_datetime(at))
+}
+
 pub fn calendar_day(year: u16, month: u8, day: u8) -> Option<Date> {
     Date::new(
         i16::try_from(year).ok()?,
@@ -486,6 +493,12 @@ mod tests {
     }
 
     #[test]
+    fn a_byte_past_jiffs_i8_is_refused_not_wrapped() {
+        assert_eq!(calendar_day(2026, 200, 1), None);
+        assert_eq!(calendar_day(2026, 1, 200), None);
+    }
+
+    #[test]
     fn a_calendar_day_is_made_only_from_a_real_one() {
         assert_eq!(calendar_day(2026, 10, 16), Some(today()));
         assert_eq!(
@@ -495,10 +508,6 @@ mod tests {
         assert_eq!(calendar_day(2026, 2, 29), None, "not a leap year");
         assert_eq!(calendar_day(2026, 0, 1), None);
         assert_eq!(calendar_day(2026, 13, 1), None);
-        // A byte too big for jiff's month must be refused, not wrapped into a
-        // negative number that some other check has to catch.
-        assert_eq!(calendar_day(2026, 200, 1), None);
-        assert_eq!(calendar_day(2026, 1, 200), None);
         assert_eq!(
             calendar_day(u16::MAX, 1, 1),
             None,

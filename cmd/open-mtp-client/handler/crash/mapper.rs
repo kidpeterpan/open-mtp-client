@@ -1,19 +1,13 @@
 use internal::dto;
-use jiff::Timestamp;
-use jiff::tz::TimeZone;
 
 use super::response::Banner;
-use crate::handler::format::short_month;
+use crate::handler::format::{local_datetime_of_ms, short_month};
 use crate::i18n::{count, t, tf};
 
 pub fn when(at_ms: u64) -> String {
-    let Some(at) = i64::try_from(at_ms)
-        .ok()
-        .and_then(|ms| Timestamp::from_millisecond(ms).ok())
-    else {
+    let Some(at) = local_datetime_of_ms(at_ms) else {
         return t("crash.unknown_time").to_owned();
     };
-    let at = TimeZone::system().to_datetime(at);
     tf(
         "date.unreal",
         &[
@@ -59,6 +53,8 @@ pub fn stopped(note: &dto::CrashNote) -> Banner {
 mod tests {
     use std::path::PathBuf;
 
+    use jiff::tz::TimeZone;
+
     use super::*;
 
     fn note(at_ms: u64, file: bool) -> dto::CrashNote {
@@ -84,6 +80,11 @@ mod tests {
         assert_eq!(when(local_ms(8, 30)), "18 Oct 2026, 08:30");
         assert_eq!(when(local_ms(23, 5)), "18 Oct 2026, 23:05");
         assert_eq!(when(u64::MAX), "at an unknown time");
+        assert_eq!(
+            when(i64::MAX as u64),
+            "at an unknown time",
+            "fits an i64, but not the years jiff holds"
+        );
     }
 
     #[test]
