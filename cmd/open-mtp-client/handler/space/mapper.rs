@@ -1,7 +1,7 @@
 //! Free Up Space's words, and its list built once per look (never per redraw).
 
-use chrono::NaiveDate;
 use internal::dto;
+use jiff::civil::Date;
 
 use crate::handler::format::{format_bytes, format_count, format_timestamp};
 use crate::i18n::{count, t, tf};
@@ -75,7 +75,7 @@ pub fn found(report: &dto::SpaceReport) -> String {
 
 /// The list: copies by group, the one to keep first, then the photos
 /// already imported. Built once per look.
-pub fn lines(report: &dto::SpaceReport, today: NaiveDate) -> Vec<Line> {
+pub fn lines(report: &dto::SpaceReport, today: Date) -> Vec<Line> {
     let mut lines = vec![Line::Heading(tf(
         "space.heading_copies",
         &[("size", &format_bytes(report.duplicate_bytes()))],
@@ -113,7 +113,7 @@ pub fn lines(report: &dto::SpaceReport, today: NaiveDate) -> Vec<Line> {
     lines
 }
 
-fn file_line(file: &dto::SpaceFile, original: bool, today: NaiveDate) -> Line {
+fn file_line(file: &dto::SpaceFile, original: bool, today: Date) -> Line {
     let mut detail = format_bytes(file.size);
     if let Some(when) = &file.modified {
         detail.push_str(&format!(" · {}", format_timestamp(when, today)));
@@ -198,8 +198,8 @@ fn files_word(number: usize) -> String {
 mod tests {
     use super::*;
 
-    fn today() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 10, 18).unwrap()
+    fn today() -> Date {
+        jiff::civil::date(2026, 10, 18)
     }
 
     #[test]

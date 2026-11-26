@@ -1,5 +1,5 @@
-use chrono::NaiveDate;
 use internal::dto;
+use jiff::civil::Date;
 
 use super::response::{
     Badge, BadgeKind, CrumbResponse, EntryResponse, NoticeResponse, PasteResponse,
@@ -325,7 +325,7 @@ pub fn to_paste_failure(error: &error::ErrorResponse) -> PasteResponse {
 }
 
 /// `today` makes recent dates relative ("Today, 12:33").
-pub fn to_entry_response(entry: &dto::Entry, today: NaiveDate) -> EntryResponse {
+pub fn to_entry_response(entry: &dto::Entry, today: Date) -> EntryResponse {
     EntryResponse {
         name: entry.name.clone(),
         is_folder: entry.is_folder,
@@ -721,7 +721,7 @@ mod tests {
     }
 
     fn to_entry_response_now(entry: &dto::Entry) -> EntryResponse {
-        to_entry_response(entry, NaiveDate::from_ymd_opt(2026, 10, 16).unwrap())
+        to_entry_response(entry, jiff::civil::date(2026, 10, 16))
     }
 
     #[test]

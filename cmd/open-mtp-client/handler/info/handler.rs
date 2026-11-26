@@ -179,7 +179,7 @@ impl Handler {
         let Some(shown) = &self.shown else {
             return space().into();
         };
-        let today = chrono::Local::now().date_naive();
+        let today = crate::handler::format::local_today();
         let info = mapper::to_info_response(
             &shown.subject,
             &shown.tally,

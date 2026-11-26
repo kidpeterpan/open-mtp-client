@@ -3,6 +3,7 @@ use internal::dto;
 use super::request::Link;
 use super::response::{ShortcutGroup, ShortcutLine};
 use crate::handler::error::Problem;
+use crate::handler::format::{local_datetime, local_datetime_of_ms};
 use crate::i18n::{english_only, t};
 use crate::keymap::Row;
 
@@ -159,7 +160,7 @@ pub fn report_text(
             };
             lines.push_str(&english_only(format!(
                 "  {}  {}{times}\n",
-                problem.at.format("%H:%M"),
+                local_datetime(problem.at).strftime("%H:%M"),
                 problem.title
             )));
         }
@@ -179,8 +180,6 @@ pub fn report_text(
 /// notes hold them, never what a report says (a panic's message can hold a
 /// file's name) and never where the file is.
 fn crash_lines(crashes: &[dto::CrashNote]) -> String {
-    use chrono::{DateTime, Local};
-
     /// The newest few; the rest are only counted.
     const SHOWN: usize = 5;
     if crashes.is_empty() {
@@ -188,17 +187,10 @@ fn crash_lines(crashes: &[dto::CrashNote]) -> String {
     }
     let mut lines = english_only("Crashes kept (newest first):\n".to_owned());
     for note in crashes.iter().take(SHOWN) {
-        let at = i64::try_from(note.at_ms)
-            .ok()
-            .and_then(DateTime::from_timestamp_millis)
-            .map_or_else(
-                || english_only("unknown time".to_owned()),
-                |at| {
-                    at.with_timezone(&Local)
-                        .format(english_only("%Y-%m-%d %H:%M"))
-                        .to_string()
-                },
-            );
+        let at = local_datetime_of_ms(note.at_ms).map_or_else(
+            || english_only("unknown time".to_owned()),
+            |at| at.strftime(english_only("%Y-%m-%d %H:%M")).to_string(),
+        );
         let place = if note.location.is_empty() {
             english_only("unknown place")
         } else {
@@ -406,6 +398,13 @@ mod tests {
     }
 
     #[test]
+    fn a_crash_with_an_impossible_time_is_listed_as_unknown() {
+        let text = report_with(vec![crash(i64::MAX as u64, "x.rs:1:1", None)]);
+
+        assert!(text.contains("  unknown time  x.rs:1:1\n"), "{text}");
+    }
+
+    #[test]
     fn a_report_lists_the_crashes_by_when_and_where_in_the_code() {
         let text = report_with(vec![
             crash(
@@ -589,10 +588,10 @@ mod tests {
     }
 
     fn problems() -> Vec<Problem> {
-        use chrono::TimeZone;
+        use jiff::tz::TimeZone;
         let at = |minute| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, 17, 14, minute, 0)
+            TimeZone::system()
+                .to_timestamp(jiff::civil::datetime(2026, 10, 17, 14, minute, 0, 0))
                 .unwrap()
         };
         vec![

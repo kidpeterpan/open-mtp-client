@@ -5,10 +5,10 @@
 //! costs O(groups) a call, never O(rows), so the pane still builds only what
 //! is on screen.
 
-use chrono::{Datelike, NaiveDate};
 use internal::dto::{Entry, FileKind, GroupBy};
+use jiff::civil::Date;
 
-use crate::handler::format::format_bytes;
+use crate::handler::format::{calendar_day, format_bytes};
 use crate::i18n::{count, key, t, tf};
 
 const LONG_MONTH_KEYS: [&str; 12] = [
@@ -52,17 +52,13 @@ impl Group {
 }
 
 /// Where a row goes: its group's rank (lower first) and label.
-pub fn bucket(by: GroupBy, entry: &Entry, today: NaiveDate) -> (u32, String) {
+pub fn bucket(by: GroupBy, entry: &Entry, today: Date) -> (u32, String) {
     match by {
         GroupBy::None => (0, String::new()),
         GroupBy::Date => date_bucket(
             entry.modified.as_ref().and_then(|time| {
                 let day = time.day();
-                NaiveDate::from_ymd_opt(
-                    i32::from(day.year),
-                    u32::from(day.month),
-                    u32::from(day.day),
-                )
+                calendar_day(day.year, day.month, day.day)
             }),
             today,
         ),
@@ -73,11 +69,12 @@ pub fn bucket(by: GroupBy, entry: &Entry, today: NaiveDate) -> (u32, String) {
 
 /// Finder's date groups, newest first; a file without a date comes last and
 /// one dated after today first.
-pub fn date_bucket(day: Option<NaiveDate>, today: NaiveDate) -> (u32, String) {
+pub fn date_bucket(day: Option<Date>, today: Date) -> (u32, String) {
     let Some(day) = day else {
         return (u32::MAX, t("explorer.group.no_date").to_owned());
     };
-    let ago = (today - day).num_days();
+    let ago = (today - day).get_days();
+    let month = day.month().unsigned_abs();
     match ago {
         ..0 => (0, t("explorer.group.later").to_owned()),
         0 => (1, t("explorer.group.today").to_owned()),
@@ -86,11 +83,11 @@ pub fn date_bucket(day: Option<NaiveDate>, today: NaiveDate) -> (u32, String) {
         8..=30 => (4, t("explorer.group.previous_30").to_owned()),
         _ if day.year() == today.year() => (
             // This year's months, newest first.
-            10 + (12 - day.month()),
+            10 + (12 - u32::from(month)),
             tf(
                 "explorer.group.month",
                 &[
-                    ("month", t(LONG_MONTH_KEYS[day.month0() as usize])),
+                    ("month", t(LONG_MONTH_KEYS[usize::from(month) - 1])),
                     ("year", &day.year().to_string()),
                 ],
             ),
@@ -338,14 +335,14 @@ impl GridFrame {
 mod tests {
     use super::*;
 
-    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    fn day(y: i16, m: i8, d: i8) -> Date {
+        jiff::civil::date(y, m, d)
     }
 
     #[test]
     fn dates_fall_into_finders_groups_at_their_edges() {
         let today = day(2026, 10, 18);
-        let label = |d: Option<NaiveDate>| date_bucket(d, today).1;
+        let label = |d: Option<Date>| date_bucket(d, today).1;
         assert_eq!(label(Some(day(2026, 10, 19))), "Later");
         assert_eq!(label(Some(today)), "Today");
         assert_eq!(label(Some(day(2026, 10, 17))), "Yesterday");
@@ -360,7 +357,7 @@ mod tests {
         assert_eq!(label(None), "No Date");
 
         // Newest first, undated last.
-        let rank = |d: Option<NaiveDate>| date_bucket(d, today).0;
+        let rank = |d: Option<Date>| date_bucket(d, today).0;
         let order = [
             rank(Some(day(2026, 10, 19))),
             rank(Some(today)),

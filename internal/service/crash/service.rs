@@ -364,10 +364,16 @@ struct Written<'a> {
 /// thread and location are single lines already, so the message can't write
 /// the header.
 fn report_text(report: &Written<'_>) -> String {
-    let when = chrono::DateTime::from_timestamp_millis(i64::try_from(report.at_ms).unwrap_or(0))
-        .map_or_else(String::new, |at| {
-            at.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-        });
+    let when = jiff::Timestamp::from_millisecond(i64::try_from(report.at_ms).unwrap_or(0))
+        .map_or_else(
+            |_| String::new(),
+            |at| {
+                jiff::tz::TimeZone::UTC
+                    .to_datetime(at)
+                    .strftime("%Y-%m-%d %H:%M:%S UTC")
+                    .to_string()
+            },
+        );
     format!(
         "open-mtp-client crash report\n\
          Version: {version}\n\
@@ -479,11 +485,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "open-mtp-client crash report");
         assert_eq!(lines[1], "Version: 0.1.0");
-        assert!(
-            lines[2].starts_with("When: 1792000000000 (2026-10-"),
-            "{}",
-            lines[2]
-        );
+        assert_eq!(lines[2], "When: 1792000000000 (2026-10-14 17:46:40 UTC)");
         assert_eq!(lines[3], "Thread: tokio-runtime-worker");
         assert_eq!(lines[LOCATION_LINE], "Location: internal/x.rs:9:3");
         assert!(text.contains("Message:\nindex out of bounds"));

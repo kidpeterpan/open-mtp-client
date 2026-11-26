@@ -5,7 +5,7 @@ members = ["cmd/open-mtp-client", "cmd/open-mtp-client-cli", "internal"]
 exclude = ["vendor"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/kidpeterpan/open-mtp-client"
@@ -28,7 +28,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio-util = { version = "0.7", features = ["io"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Dates and the Mac's time zone (chrono is unmaintained: RUSTSEC-2026-0543). The system zone is
+# read from /etc/localtime and the zoneinfo files macOS keeps; nothing is bundled.
+jiff = { version = "1", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 sys-locale = "0.3"
 # Telling duplicate files apart by their whole contents (Free Up Space).
 sha2 = "0.11"

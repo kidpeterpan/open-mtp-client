@@ -2,7 +2,7 @@ use std::fs::Metadata;
 use std::io;
 use std::time::SystemTime;
 
-use chrono::{DateTime, Datelike, Local, Timelike};
+use jiff::tz::TimeZone;
 
 use crate::dto::{Disk, Entry, Error, Timestamp};
 
@@ -19,13 +19,14 @@ pub fn to_entry(name: String, metadata: &Metadata) -> Entry {
 
 /// File times are instants; show them on the Mac's local clock.
 pub fn to_timestamp(time: SystemTime) -> Timestamp {
-    let local: DateTime<Local> = time.into();
+    let at = jiff::Timestamp::try_from(time).unwrap_or_default();
+    let local = TimeZone::system().to_datetime(at);
     Timestamp {
         year: u16::try_from(local.year()).unwrap_or_default(),
-        month: local.month() as u8,
-        day: local.day() as u8,
-        hour: local.hour() as u8,
-        minute: local.minute() as u8,
+        month: local.month().unsigned_abs(),
+        day: local.day().unsigned_abs(),
+        hour: local.hour().unsigned_abs(),
+        minute: local.minute().unsigned_abs(),
     }
 }
 
@@ -48,8 +49,6 @@ pub fn to_error(err: &io::Error, path: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
-
-    use chrono::TimeZone;
 
     use super::*;
 
@@ -79,12 +78,26 @@ mod tests {
     #[test]
     fn timestamps_use_the_local_clock() {
         let instant = 1_791_376_200;
-        let local = Local.timestamp_opt(instant, 0).unwrap();
+        let local = TimeZone::system().to_datetime(jiff::Timestamp::from_second(instant).unwrap());
 
         let stamp = to_timestamp(UNIX_EPOCH + Duration::from_secs(instant as u64));
 
-        assert_eq!(u32::from(stamp.hour), local.hour());
-        assert_eq!(u32::from(stamp.day), local.day());
+        assert_eq!(i8::try_from(stamp.hour).unwrap(), local.hour());
+        assert_eq!(i8::try_from(stamp.day).unwrap(), local.day());
+    }
+
+    #[test]
+    fn a_time_jiff_cannot_hold_shows_as_the_epoch_and_does_not_panic() {
+        let far = UNIX_EPOCH + Duration::from_secs(1_000_000_000_000);
+
+        assert_eq!(to_timestamp(far), to_timestamp(UNIX_EPOCH));
+    }
+
+    #[test]
+    fn a_time_before_1970_keeps_its_own_year() {
+        let stamp = to_timestamp(UNIX_EPOCH - Duration::from_secs(400 * 86_400));
+
+        assert_eq!((stamp.year, stamp.month), (1968, 11));
     }
 
     #[test]

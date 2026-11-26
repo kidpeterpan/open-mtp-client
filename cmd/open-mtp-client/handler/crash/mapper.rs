@@ -1,25 +1,20 @@
-use chrono::{DateTime, Datelike, Local};
 use internal::dto;
 
 use super::response::Banner;
-use crate::handler::format::short_month;
+use crate::handler::format::{local_datetime_of_ms, short_month};
 use crate::i18n::{count, t, tf};
 
 pub fn when(at_ms: u64) -> String {
-    let Some(at) = i64::try_from(at_ms)
-        .ok()
-        .and_then(DateTime::from_timestamp_millis)
-    else {
+    let Some(at) = local_datetime_of_ms(at_ms) else {
         return t("crash.unknown_time").to_owned();
     };
-    let at = at.with_timezone(&Local);
     tf(
         "date.unreal",
         &[
             ("day", &at.day().to_string()),
-            ("month", short_month(at.month())),
+            ("month", short_month(u32::from(at.month().unsigned_abs()))),
             ("year", &at.year().to_string()),
-            ("clock", &at.format("%H:%M").to_string()),
+            ("clock", &at.strftime("%H:%M").to_string()),
         ],
     )
 }
@@ -58,7 +53,7 @@ pub fn stopped(note: &dto::CrashNote) -> Banner {
 mod tests {
     use std::path::PathBuf;
 
-    use chrono::TimeZone;
+    use jiff::tz::TimeZone;
 
     use super::*;
 
@@ -71,11 +66,11 @@ mod tests {
         }
     }
 
-    fn local_ms(hour: u32, minute: u32) -> u64 {
-        Local
-            .with_ymd_and_hms(2026, 10, 18, hour, minute, 0)
+    fn local_ms(hour: i8, minute: i8) -> u64 {
+        TimeZone::system()
+            .to_timestamp(jiff::civil::datetime(2026, 10, 18, hour, minute, 0, 0))
             .unwrap()
-            .timestamp_millis()
+            .as_millisecond()
             .try_into()
             .unwrap()
     }
@@ -85,6 +80,11 @@ mod tests {
         assert_eq!(when(local_ms(8, 30)), "18 Oct 2026, 08:30");
         assert_eq!(when(local_ms(23, 5)), "18 Oct 2026, 23:05");
         assert_eq!(when(u64::MAX), "at an unknown time");
+        assert_eq!(
+            when(i64::MAX as u64),
+            "at an unknown time",
+            "fits an i64, but not the years jiff holds"
+        );
     }
 
     #[test]

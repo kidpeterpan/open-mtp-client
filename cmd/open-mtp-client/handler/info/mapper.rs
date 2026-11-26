@@ -1,5 +1,5 @@
-use chrono::NaiveDate;
 use internal::dto;
+use jiff::civil::Date;
 
 use super::handler::{Place, Subject};
 use super::response::InfoResponse;
@@ -50,7 +50,7 @@ pub fn to_info_response(
     tally: &dto::Tally,
     counting: bool,
     error: Option<&ErrorResponse>,
-    today: NaiveDate,
+    today: Date,
 ) -> InfoResponse {
     let counts_folders = !folders_to_count(subject).is_empty();
     let mut rows = Vec::new();
@@ -280,7 +280,7 @@ mod tests {
                 ..dto::Abilities::default()
             });
         }
-        let today = NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        let today = jiff::civil::date(2026, 10, 17);
         let rows = |subject: &Subject| {
             to_info_response(subject, &dto::Tally::default(), false, None, today).rows
         };
@@ -312,8 +312,8 @@ mod tests {
     use super::*;
     use crate::handler::testing::{file, folder};
 
-    fn today() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 10, 17).unwrap()
+    fn today() -> Date {
+        jiff::civil::date(2026, 10, 17)
     }
 
     fn sized(name: &str, size_bytes: u64) -> dto::Entry {

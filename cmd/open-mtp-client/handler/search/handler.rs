@@ -105,7 +105,7 @@ pub struct Handler {
     kind: Option<FileKind>,
     date: Option<dto::DateRange>,
     /// Today, for the date: the Mac's clock, a fixed day in tests.
-    today: fn() -> chrono::NaiveDate,
+    today: fn() -> jiff::civil::Date,
     /// Everything the walk has seen.
     catalogue: Vec<dto::Found>,
     /// Each catalogue name in lower case, made once, for ordering by name.
@@ -605,7 +605,7 @@ impl Handler {
         );
         let above = range.start as f32 * ROW_HEIGHT;
         let below = (self.matches.len() - range.end) as f32 * ROW_HEIGHT;
-        let today = chrono::Local::now().date_naive();
+        let today = crate::handler::format::local_today();
         let mut rows = column![space().height(above)];
         for &at in &self.matches[range] {
             let row = mapper::to_row(&self.catalogue[at], today);
@@ -818,8 +818,8 @@ mod tests {
         assert!(handler.progress.done);
     }
 
-    fn mid_june() -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()
+    fn mid_june() -> jiff::civil::Date {
+        jiff::civil::date(2026, 6, 15)
     }
 
     fn dated(folder: &str, name: &str, month: u8, day: u8) -> dto::Found {
