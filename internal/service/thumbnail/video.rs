@@ -7,25 +7,19 @@
 //! trusted, so the decoder runs on its own thread under a deadline; a stuck one
 //! is left to finish and its answer is dropped.
 
-use crate::dto::{THUMBNAIL_SIZE, Thumbnail};
-use av_core_foundation::{CGPoint, CGRect, CGSize};
-use av_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext, CGImage};
-use av_core_media::CMTime;
-use av_foundation::{AVAssetImageGenerator, AVURLAsset};
-use av_foundation_types::{NSString, NSURL};
-use av_objc2::rc::autoreleasepool;
+use crate::dto::Thumbnail;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// `kCGImageAlphaPremultipliedLast`: the order `Thumbnail::rgba` is in.
-const RGBA_PREMULTIPLIED_LAST: u32 = 1;
+/// How long the decoder gets for one frame.
+pub const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The first frame of the video at `path`, at most `THUMBNAIL_SIZE` a side and
 /// the right way up. `None` when no frame can be made or `timeout` passes.
 pub fn first_frame(path: &Path, timeout: Duration) -> Option<Thumbnail> {
     let path = path.to_path_buf();
-    with_deadline(timeout, move || autoreleasepool(|_| decode(&path))).flatten()
+    with_deadline(timeout, move || decode(&path)).flatten()
 }
 
 /// Runs `work` on its own thread. `None` when it has not answered within
@@ -42,69 +36,99 @@ pub fn with_deadline<T: Send + 'static>(
     receive.recv_timeout(timeout).ok()
 }
 
-#[allow(deprecated)] // the synchronous call, so the deadline above is the only wait
-fn decode(path: &Path) -> Option<Thumbnail> {
-    let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path.to_str()?), false);
-    // SAFETY: plain Objective-C calls with valid arguments; no pointers are kept.
-    let image = unsafe {
-        let asset = AVURLAsset::URLAssetWithURL_options(&url, None);
-        let generator = AVAssetImageGenerator::assetImageGeneratorWithAsset(&asset);
-        generator.setAppliesPreferredTrackTransform(true);
-        let side = f64::from(THUMBNAIL_SIZE);
-        generator.setMaximumSize(CGSize {
-            width: side,
-            height: side,
-        });
-        let zero = CMTime::new(0, 1);
-        generator.setRequestedTimeToleranceBefore(zero);
-        generator.setRequestedTimeToleranceAfter(zero);
-        generator
-            .copyCGImageAtTime_actualTime_error(zero, std::ptr::null_mut())
-            .ok()?
-    };
-    rgba_of(&image)
+/// The decoder: AVFoundation, on a Mac. Anywhere else there is none, and no
+/// video has a frame.
+#[cfg(target_os = "macos")]
+use av::decode;
+
+#[cfg(not(target_os = "macos"))]
+fn decode(_path: &Path) -> Option<Thumbnail> {
+    None
 }
 
-/// The pixels of `image` as premultiplied RGBA, top row first.
-fn rgba_of(image: &CGImage) -> Option<Thumbnail> {
-    let width = CGImage::width(Some(image));
-    let height = CGImage::height(Some(image));
-    let side = THUMBNAIL_SIZE as usize;
-    if width == 0 || height == 0 || width > side || height > side {
-        return None;
+#[cfg(target_os = "macos")]
+mod av {
+    use super::Thumbnail;
+    use crate::dto::THUMBNAIL_SIZE;
+    use av_core_foundation::{CGPoint, CGRect, CGSize};
+    use av_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext, CGImage};
+    use av_core_media::CMTime;
+    use av_foundation::{AVAssetImageGenerator, AVURLAsset};
+    use av_foundation_types::{NSString, NSURL};
+    use av_objc2::rc::autoreleasepool;
+    use std::path::Path;
+
+    /// `kCGImageAlphaPremultipliedLast`: the order `Thumbnail::rgba` is in.
+    const RGBA_PREMULTIPLIED_LAST: u32 = 1;
+
+    pub(super) fn decode(path: &Path) -> Option<Thumbnail> {
+        autoreleasepool(|_| decode_in_pool(path))
     }
-    let mut rgba = vec![0u8; width * height * 4];
-    let space = CGColorSpace::new_device_rgb()?;
-    // SAFETY: `rgba` outlives `context`, which is dropped before it is read,
-    // and is exactly `height` rows of `width * 4` bytes.
-    let context = unsafe {
-        CGBitmapContextCreate(
-            rgba.as_mut_ptr().cast(),
-            width,
-            height,
-            8,
-            width * 4,
-            Some(&space),
-            RGBA_PREMULTIPLIED_LAST,
-        )
-    }?;
-    let rect = CGRect {
-        origin: CGPoint { x: 0.0, y: 0.0 },
-        size: CGSize {
-            width: width as f64,
-            height: height as f64,
-        },
-    };
-    CGContext::draw_image(Some(&context), rect, Some(image));
-    drop(context);
-    Some(Thumbnail {
-        width: u32::try_from(width).ok()?,
-        height: u32::try_from(height).ok()?,
-        rgba,
-    })
+
+    #[allow(deprecated)] // the synchronous call, so the deadline above is the only wait
+    fn decode_in_pool(path: &Path) -> Option<Thumbnail> {
+        let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path.to_str()?), false);
+        // SAFETY: plain Objective-C calls with valid arguments; no pointers are kept.
+        let image = unsafe {
+            let asset = AVURLAsset::URLAssetWithURL_options(&url, None);
+            let generator = AVAssetImageGenerator::assetImageGeneratorWithAsset(&asset);
+            generator.setAppliesPreferredTrackTransform(true);
+            let side = f64::from(THUMBNAIL_SIZE);
+            generator.setMaximumSize(CGSize {
+                width: side,
+                height: side,
+            });
+            let zero = CMTime::new(0, 1);
+            generator.setRequestedTimeToleranceBefore(zero);
+            generator.setRequestedTimeToleranceAfter(zero);
+            generator
+                .copyCGImageAtTime_actualTime_error(zero, std::ptr::null_mut())
+                .ok()?
+        };
+        rgba_of(&image)
+    }
+
+    /// The pixels of `image` as premultiplied RGBA, top row first.
+    fn rgba_of(image: &CGImage) -> Option<Thumbnail> {
+        let width = CGImage::width(Some(image));
+        let height = CGImage::height(Some(image));
+        let side = THUMBNAIL_SIZE as usize;
+        if width == 0 || height == 0 || width > side || height > side {
+            return None;
+        }
+        let mut rgba = vec![0u8; width * height * 4];
+        let space = CGColorSpace::new_device_rgb()?;
+        // SAFETY: `rgba` outlives `context`, which is dropped before it is read,
+        // and is exactly `height` rows of `width * 4` bytes.
+        let context = unsafe {
+            CGBitmapContextCreate(
+                rgba.as_mut_ptr().cast(),
+                width,
+                height,
+                8,
+                width * 4,
+                Some(&space),
+                RGBA_PREMULTIPLIED_LAST,
+            )
+        }?;
+        let rect = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize {
+                width: width as f64,
+                height: height as f64,
+            },
+        };
+        CGContext::draw_image(Some(&context), rect, Some(image));
+        drop(context);
+        Some(Thumbnail {
+            width: u32::try_from(width).ok()?,
+            height: u32::try_from(height).ok()?,
+            rgba,
+        })
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use crate::dto::THUMBNAIL_SIZE;

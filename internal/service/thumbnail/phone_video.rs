@@ -15,7 +15,6 @@
 use std::future::Future;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::Semaphore;
 
@@ -28,8 +27,6 @@ use crate::dto::{Error, Thumbnail};
 pub(super) const MAX_VIDEO_BYTES: u64 = 1 << 40;
 /// One request to the phone: small enough to notice a lost phone between two.
 const CHUNK: u64 = 1 << 20;
-/// How long the Mac's decoder gets for one frame.
-const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// Videos made at once. The phone has one session and a video takes a dozen
 /// requests; two at once would only take turns.
 const VIDEOS_AT_ONCE: usize = 1;
@@ -169,7 +166,7 @@ async fn frame_from(
             })
             .collect();
         write_sparse(&path, size, &parts).ok()?;
-        video::first_frame(&path, FRAME_TIMEOUT)
+        video::first_frame(&path, video::FRAME_TIMEOUT)
     })
     .await
     .ok()
@@ -196,7 +193,7 @@ impl Drop for Counted {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use crate::service::thumbnail::fixtures::{bytes, padded_at_end, padded_at_start};

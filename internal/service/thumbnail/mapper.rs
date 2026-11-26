@@ -23,7 +23,14 @@ pub fn is_decodable(name: &str) -> bool {
 }
 
 /// What macOS's Quick Look can preview that the decoder above can't.
-const QUICK_LOOK: &[&str] = &["heic", "heif", "mov", "mp4", "m4v", "dng", "pdf"];
+const QUICK_LOOK: &[&str] = &["heic", "heif", "dng", "pdf"];
+/// Videos on the Mac, whose first frame AVFoundation makes (`video.rs`): Quick
+/// Look can take a minute on a file it dislikes, this is bounded.
+const AV_VIDEO: &[&str] = &["mov", "mp4", "m4v"];
+
+pub fn is_av_video(name: &str) -> bool {
+    extension(name).is_some_and(|ext| AV_VIDEO.contains(&ext.as_str()))
+}
 
 pub fn is_quick_look(name: &str) -> bool {
     extension(name).is_some_and(|ext| QUICK_LOOK.contains(&ext.as_str()))
@@ -231,8 +238,23 @@ mod tests {
         assert!(!is_decodable("README"));
 
         assert!(is_quick_look("IMG_0001.HEIC"));
-        assert!(is_quick_look("clip.mov"));
+        assert!(is_quick_look("scan.pdf"));
+        assert!(is_quick_look("raw.dng"));
+        assert!(
+            !is_quick_look("clip.mov"),
+            "videos have a frame made here instead"
+        );
         assert!(!is_quick_look("photo.jpg"));
+    }
+
+    #[test]
+    fn mac_mp4_and_quicktime_videos_are_decoded_here() {
+        for name in ["a.mov", "A.MP4", "a.m4v"] {
+            assert!(is_av_video(name), "{name}");
+        }
+        for name in ["a.3gp", "a.mkv", "a.heic", "a.jpg", "mov"] {
+            assert!(!is_av_video(name), "{name}");
+        }
 
         assert!(is_phone_media("clip.MP4"));
         assert!(is_phone_media("IMG_002.heic"));

@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use super::disk::{self, DiskCache};
 use super::mapper;
 use super::phone_video;
+use super::video;
 use crate::dto::{Entry, Error, Thumbnail};
 use crate::service::{device, local};
 
@@ -154,7 +155,9 @@ impl Service {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let previewable = mapper::is_quick_look(&name) || mapper::is_decodable(&name);
+        let previewable = mapper::is_av_video(&name)
+            || mapper::is_quick_look(&name)
+            || mapper::is_decodable(&name);
         if !previewable {
             return Ok(None);
         }
@@ -162,6 +165,9 @@ impl Service {
         let metadata = tokio::fs::metadata(path)
             .await
             .map_err(|err| local::mapper::to_error(&err, path))?;
+        if mapper::is_av_video(&name) {
+            return Ok(av_frame(path).await);
+        }
         if mapper::is_quick_look(&name) {
             return Ok(quick_look(path, &name, QUICK_LOOK_TIMEOUT).await);
         }
@@ -173,6 +179,18 @@ impl Service {
             .map_err(|err| local::mapper::to_error(&err, path))?;
         Ok(decode(bytes).await)
     }
+}
+
+/// The first frame of the Mac video at `path`, decoded off the async threads
+/// a couple at a time like any other decode; `None` for a file that is no
+/// video or takes more than `video::FRAME_TIMEOUT`.
+async fn av_frame(path: &str) -> Option<Thumbnail> {
+    let _permit = DECODES.acquire().await.ok()?;
+    let path = PathBuf::from(path);
+    tokio::task::spawn_blocking(move || video::first_frame(&path, video::FRAME_TIMEOUT))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// How long Quick Look gets for one preview: `qlmanage` can hang for good on
@@ -649,6 +667,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn red_top_left(thumb: &Thumbnail) -> bool {
         let at =
             ((thumb.height as usize / 4) * thumb.width as usize + thumb.width as usize / 4) * 4;
@@ -667,6 +686,7 @@ mod tests {
         asks
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn a_phone_video_without_a_phone_thumbnail_gets_its_first_frame() {
         let big = crate::service::thumbnail::fixtures::padded_at_end(30 << 20);
@@ -704,6 +724,7 @@ mod tests {
         assert!(c.height > c.width && red_top_left(&c), "upright");
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn a_second_look_at_a_cached_video_asks_the_phone_nothing() {
         let cache = tempfile::tempdir().unwrap();
@@ -785,6 +806,7 @@ mod tests {
         assert_eq!(asks, baseline);
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn videos_asked_for_together_each_get_their_frame() {
         let phone = Arc::new(
@@ -959,6 +981,112 @@ mod tests {
 
         assert_eq!(thumbnail, None);
         assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    // ---- Videos on the Mac: the same frame, not Quick Look ----
+
+    #[cfg(target_os = "macos")]
+    fn mac_video(name: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        fs::write(&path, crate::service::thumbnail::fixtures::bytes(name)).unwrap();
+        let path = path.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn mac_service(dir: &Path) -> Service {
+        Service::new(Arc::new(device::Service::new(virtual_source(dir))))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_mac_video_gets_an_avfoundation_frame_not_quick_look() {
+        // Quick Look makes its own size and shape; only the decoder here makes this exactly.
+        for name in ["moov_at_end.mp4", "faststart.mp4", "portrait.mp4"] {
+            let (dir, path) = mac_video(name);
+            let expected = super::super::video::first_frame(
+                Path::new(&path),
+                std::time::Duration::from_secs(20),
+            );
+
+            let thumbnail = mac_service(dir.path()).mac(&path).await.unwrap();
+
+            assert!(expected.is_some(), "{name}");
+            assert_eq!(thumbnail, expected, "{name}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_mac_portrait_video_is_upright() {
+        let (dir, path) = mac_video("portrait.mp4");
+        let thumbnail = mac_service(dir.path())
+            .mac(&path)
+            .await
+            .unwrap()
+            .expect("a frame");
+        assert!(thumbnail.height > thumbnail.width);
+        assert!(red_top_left(&thumbnail));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_damaged_mac_video_has_no_thumbnail_and_nothing_hangs() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("fake.mov", b"not a movie".to_vec()),
+            ("empty.mp4", Vec::new()),
+            ("cut.m4v", video("moov_at_end.mp4")[..300].to_vec()),
+        ] {
+            fs::write(dir.path().join(name), bytes).unwrap();
+        }
+        let service = mac_service(dir.path());
+        let started = std::time::Instant::now();
+
+        for name in ["fake.mov", "empty.mp4", "cut.m4v"] {
+            let path = dir.path().join(name).to_string_lossy().into_owned();
+            assert_eq!(service.mac(&path).await, Ok(None), "{name}");
+        }
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_mac_video_is_path_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.mp4").to_string_lossy().into_owned();
+        let started = std::time::Instant::now();
+
+        let thumbnail = mac_service(dir.path()).mac(&path).await;
+
+        assert_eq!(thumbnail, Err(Error::PathNotFound(path)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn mac_videos_asked_for_together_each_get_their_frame() {
+        let (dir, _) = mac_video("moov_at_end.mp4");
+        let service = Arc::new(mac_service(dir.path()));
+        let path = dir
+            .path()
+            .join("moov_at_end.mp4")
+            .to_string_lossy()
+            .into_owned();
+        let asked: Vec<_> = (0..8)
+            .map(|_| {
+                let (service, path) = (Arc::clone(&service), path.clone());
+                tokio::spawn(async move { service.mac(&path).await })
+            })
+            .collect();
+        for ask in asked {
+            assert!(ask.await.unwrap().unwrap().is_some());
+        }
     }
 
     #[tokio::test]
