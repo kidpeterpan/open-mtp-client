@@ -240,38 +240,10 @@ mod tests {
         assert_eq!(full, sparse, "the same picture, byte for byte");
     }
 
-    /// `moov_at_end.mp4` with `extra` bytes of filler added to the end of its
-    /// `mdat`, so a head cut at the first tier leaves a real hole. The index
-    /// points at absolute offsets before the filler, so it still works.
-    fn padded(extra: usize) -> Vec<u8> {
-        let whole = bytes("moov_at_end.mp4");
-        let mut walker = Walker::new(whole.len() as u64);
-        let layout = loop {
-            let at = walker.next_offset() as usize;
-            let end = (at + HEADER_PEEK as usize).min(whole.len());
-            if let Some(layout) = walker.feed(&whole[at..end]).unwrap() {
-                break layout;
-            }
-        };
-        assert_eq!(
-            layout.mdat_data - layout.mdat_start,
-            16,
-            "the fixture's mdat has a 64-bit size"
-        );
-        let size_at = layout.mdat_start as usize + 8;
-        let old = u64::from_be_bytes(whole[size_at..size_at + 8].try_into().unwrap());
-        let moov_at = layout.moov.start as usize;
-        let mut out = whole[..moov_at].to_vec();
-        out[size_at..size_at + 8].copy_from_slice(&(old + extra as u64).to_be_bytes());
-        out.extend(std::iter::repeat_n(0xAB, extra));
-        out.extend_from_slice(&whole[moov_at..]);
-        out
-    }
-
     #[test]
     fn a_hole_in_the_middle_of_the_data_changes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let whole = padded(6 << 20);
+        let whole = crate::service::thumbnail::fixtures::padded_at_end(6 << 20);
         let path = dir.path().join("padded.mp4");
         std::fs::write(&path, &whole).unwrap();
         let full = first_frame(&path, LONG).unwrap();

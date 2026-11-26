@@ -7,8 +7,8 @@ use crate::dto::{THUMBNAIL_SIZE, Thumbnail};
 const DECODABLE: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff"];
 /// Media a phone may have its own thumbnail for (its media index covers these).
 const PHONE_MEDIA: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "dng", "mp4", "mov", "3gp", "mkv",
-    "webm",
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "dng", "mp4", "m4v", "mov", "3gp",
+    "mkv", "webm",
 ];
 
 fn extension(name: &str) -> Option<String> {
@@ -31,6 +31,15 @@ pub fn is_quick_look(name: &str) -> bool {
 
 pub fn is_phone_media(name: &str) -> bool {
     extension(name).is_some_and(|ext| PHONE_MEDIA.contains(&ext.as_str()))
+}
+
+/// Videos whose first frame can be made from the start and the index of the
+/// file (`mp4::read_plan`): MP4 and QuickTime. The Matroska family (mkv, webm)
+/// keeps its index elsewhere and is not read this way.
+const PHONE_VIDEO: &[&str] = &["mp4", "m4v", "mov", "3gp"];
+
+pub fn is_phone_video(name: &str) -> bool {
+    extension(name).is_some_and(|ext| PHONE_VIDEO.contains(&ext.as_str()))
 }
 
 /// Widest or tallest image decoded; anything bigger is refused before its
@@ -228,6 +237,20 @@ mod tests {
         assert!(is_phone_media("clip.MP4"));
         assert!(is_phone_media("IMG_002.heic"));
         assert!(!is_phone_media("notes.txt"));
+        assert!(
+            is_phone_media("clip.m4v"),
+            "a phone may have a thumbnail for it"
+        );
+    }
+
+    #[test]
+    fn mp4_and_quicktime_videos_can_have_a_frame_made_here() {
+        for name in ["a.mp4", "A.MP4", "a.m4v", "a.mov", "a.3gp"] {
+            assert!(is_phone_video(name), "{name}");
+        }
+        for name in ["a.mkv", "a.webm", "a.jpg", "mp4", ".mp4", "a.mp4.txt", "a"] {
+            assert!(!is_phone_video(name), "{name}");
+        }
     }
 
     #[test]
