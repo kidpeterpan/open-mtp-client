@@ -41,6 +41,16 @@ block2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSBundle", "NSData", "NSDate", "NSDictionary", "NSError", "NSGeometry", "NSObjCRuntime", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSArray", "NSURL"] }
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSBitmapImageRep", "NSBox", "NSCell", "NSColor", "NSControl", "NSDockTile", "NSImage", "NSImageRep", "NSEvent", "NSGraphicsContext", "NSImageView", "NSMenu", "NSMenuItem", "NSProgressIndicator", "NSResponder", "NSRunningApplication", "NSSharingService", "NSView", "NSWindow"] }
 objc2-user-notifications = { version = "0.2", features = ["block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+# A video's first frame (service/thumbnail/video.rs). These crates are the 0.3 line, which
+# needs objc2 0.6 (iced's own dependencies already build it, so no second copy is compiled);
+# the code above stays on 0.5. The two never share an object: a path goes in, RGBA bytes
+# come out.
+av_objc2 = { package = "objc2", version = "0.6" }
+av-foundation = { package = "objc2-av-foundation", version = "0.3", default-features = false, features = ["AVAsset", "AVAssetImageGenerator", "objc2-core-foundation", "objc2-core-media", "objc2-core-graphics"] }
+av-core-media = { package = "objc2-core-media", version = "0.3", default-features = false, features = ["CMTime"] }
+av-core-graphics = { package = "objc2-core-graphics", version = "0.3", default-features = false, features = ["CGImage", "CGBitmapContext", "CGColorSpace", "CGContext"] }
+av-core-foundation = { package = "objc2-core-foundation", version = "0.3", default-features = false, features = ["CFCGTypes"] }
+av-foundation-types = { package = "objc2-foundation", version = "0.3", default-features = false, features = ["NSURL", "NSString", "NSError", "NSDictionary"] }
 
 # macOS keeps every codegen unit's object file beside a debug binary
 # ("unpacked"), and cargo never removes the ones a changed build leaves behind:
