@@ -134,7 +134,7 @@ pub fn checklist<'a, Message: 'a>(checks: &'a [CheckResponse]) -> Element<'a, Me
             ("✗", text::danger)
         };
         row![
-            text(mark).style(style).width(18),
+            crate::icons::mark(mark, 16.0).style(style).width(18),
             text(&check.text).size(14).width(Length::Fill)
         ]
         .spacing(6)

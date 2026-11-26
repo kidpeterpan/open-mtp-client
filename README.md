@@ -179,4 +179,4 @@ It's free. If it saved you time, you can [buy me a coffee](https://buymeacoffee.
 
 ## License
 
-[MIT](LICENSE). It includes a patched copy of [mtp-rs](https://github.com/vdavid/mtp-rs) in `vendor/`, which keeps its own licenses.
+[MIT](LICENSE). It includes a patched copy of [mtp-rs](https://github.com/vdavid/mtp-rs) in `vendor/`, which keeps its own licenses, and a small part of the [Lucide](https://lucide.dev) icon font (ISC, in `assets/fonts/`).

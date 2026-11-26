@@ -1724,7 +1724,7 @@ impl Handler {
                 row![
                     text(job.label()).size(12),
                     space::horizontal(),
-                    button(text("×").size(14))
+                    button(crate::icons::icon(crate::icons::CLOSE, 14.0))
                         .style(button::text)
                         .padding([0, 6])
                         .on_press(Message::Request(Request::Remove(index))),
@@ -2199,9 +2199,18 @@ fn history_row(index: usize, finished: &Finished) -> Element<'_, Message> {
     for note in notes {
         lines = lines.push(text(note).size(11));
     }
-    let mut line = row![text(mark).size(14), lines, space::horizontal(),]
-        .spacing(8)
-        .align_y(Alignment::Center);
+    let tone: fn(&iced::Theme) -> text::Style = match mark {
+        "✓" => text::success,
+        "✕" => text::danger,
+        _ => text::warning,
+    };
+    let mut line = row![
+        crate::icons::mark(mark, 16.0).style(tone),
+        lines,
+        space::horizontal(),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
     match &finished.outcome {
         Ok(summary) if summary.reveal.is_some() => {
             line = line.push(
@@ -2263,7 +2272,7 @@ fn report_view<'a>(
     for row in &summary.report[shown.clone()] {
         list = list.push(
             row![
-                text(row.mark).size(12).width(16),
+                crate::icons::mark(row.mark, 13.0).width(16),
                 text(&row.path)
                     .size(12)
                     .width(Length::FillPortion(3))
@@ -3408,7 +3417,10 @@ mod tests {
             ui.find("Show in Finder").is_err(),
             "nothing arrived anywhere"
         );
-        assert!(ui.find("⚠").is_ok(), "copies not the same are bad news");
+        assert!(
+            ui.find(crate::icons::WARNING.to_string()).is_ok(),
+            "copies not the same are bad news"
+        );
         drop(ui);
         request(&mut handler, Request::Details(0));
         let mut ui = iced_test::simulator(handler.view());
@@ -3920,7 +3932,7 @@ mod tests {
 
         let mut ui = iced_test::simulator(handler.view());
 
-        assert!(ui.find("⚠").is_ok());
+        assert!(ui.find(crate::icons::WARNING.to_string()).is_ok());
         assert!(
             ui.find("DCIM/IMG_9.jpg — Your phone can't do this over USB")
                 .is_ok()
@@ -3959,7 +3971,7 @@ mod tests {
 
         let mut ui = iced_test::simulator(handler.view());
 
-        assert!(ui.find("⚠").is_err());
+        assert!(ui.find(crate::icons::WARNING.to_string()).is_err());
         assert!(ui.find("Retry failed").is_err());
         assert!(ui.find("Show in Finder").is_ok());
     }
@@ -4559,10 +4571,10 @@ mod tests {
         let mut ui = iced_test::simulator(handler.view());
 
         assert!(
-            ui.find("⚠").is_ok(),
+            ui.find(crate::icons::WARNING.to_string()).is_ok(),
             "a move that left files behind is not a clean ✓"
         );
-        assert!(ui.find("✓").is_err());
+        assert!(ui.find(crate::icons::CHECK.to_string()).is_err());
         assert!(
             ui.find("b.jpg — stayed on the phone: it changed after it was copied")
                 .is_ok()
@@ -4589,8 +4601,8 @@ mod tests {
 
         let mut ui = iced_test::simulator(handler.view());
 
-        assert!(ui.find("✓").is_ok());
-        assert!(ui.find("⚠").is_err());
+        assert!(ui.find(crate::icons::CHECK.to_string()).is_ok());
+        assert!(ui.find(crate::icons::WARNING.to_string()).is_err());
         assert!(ui.find("Retry").is_err());
     }
 
@@ -4895,7 +4907,10 @@ mod tests {
         let mut ui = iced_test::simulator(handler.view());
         assert!(ui.find("Retry failed").is_err());
         assert!(ui.find("Retry").is_err());
-        assert!(ui.find("⚠").is_ok(), "but it still says something failed");
+        assert!(
+            ui.find(crate::icons::WARNING.to_string()).is_ok(),
+            "but it still says something failed"
+        );
     }
 
     #[test]

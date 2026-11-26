@@ -289,7 +289,7 @@ impl Handler {
             .into(),
             (None, Some(notice)) => row![
                 text(notice).size(13).width(Length::Fill),
-                button(text("×").size(13))
+                button(crate::icons::icon(crate::icons::CLOSE, 13.0))
                     .style(button::text)
                     .on_press(Message::Dismiss),
             ]
