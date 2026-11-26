@@ -3958,7 +3958,7 @@ impl Handler {
         let mut trail = row![].spacing(2).align_y(Alignment::Center);
         for (index, crumb) in crumbs.into_iter().enumerate() {
             if index > 0 {
-                trail = trail.push(icons::icon(icons::CRUMB, 14.0).style(text::secondary));
+                trail = trail.push(icons::icon(icons::CRUMB, 11.0).style(text::secondary));
             }
             let label = text(crumb.label).size(15).wrapping(Wrapping::None);
             trail = if index == last {
