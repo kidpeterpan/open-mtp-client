@@ -172,8 +172,9 @@ mod av {
         };
         CGContext::draw_image(Some(&context), rect, Some(image));
         drop(context);
-        for pixel in rgba.chunks_exact_mut(4) {
-            pixel[3] = 255;
+        // The fourth byte of each pixel was skipped by the context: opaque.
+        for alpha in rgba.iter_mut().skip(3).step_by(4) {
+            *alpha = 255;
         }
         Some(Thumbnail {
             width: u32::try_from(width).ok()?,
