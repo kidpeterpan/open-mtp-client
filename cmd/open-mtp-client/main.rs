@@ -1,6 +1,7 @@
 mod app;
 mod handler;
 mod i18n;
+mod icons;
 mod keymap;
 mod packaging;
 mod placement;
@@ -13,6 +14,7 @@ fn main() -> iced::Result {
     wire::watch_for_crashes();
     iced::application(boot, App::update, App::view)
         .title("open-mtp-client")
+        .font(icons::FONT_BYTES)
         .theme(App::theme)
         .subscription(App::subscription)
         .window(wire::opening_window())

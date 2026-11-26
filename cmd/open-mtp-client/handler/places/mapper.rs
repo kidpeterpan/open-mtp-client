@@ -1,6 +1,7 @@
 use internal::dto;
 
 use crate::i18n::{t, tf};
+use crate::icons;
 
 pub fn place_label(place: &dto::Place) -> String {
     if place.volume {
@@ -14,6 +15,17 @@ pub fn place_label(place: &dto::Place) -> String {
         _ => t("places.home"),
     };
     label.to_owned()
+}
+
+/// The icon beside a place: a disk, the home folder, or a usual folder of it.
+pub fn place_symbol(place: &dto::Place) -> char {
+    if place.volume {
+        return icons::HARD_DRIVE;
+    }
+    match icons::folder_at(&place.path) {
+        icons::FOLDER => icons::HOUSE,
+        usual => usual,
+    }
 }
 
 /// A disk's room as the sidebar shows it: how much of the bar is used, and
@@ -56,5 +68,32 @@ mod tests {
             capacity: 0,
         });
         assert_eq!(used, 0.0, "a disk that says nothing is not full");
+    }
+
+    fn place(path: &str, volume: bool) -> dto::Place {
+        dto::Place {
+            label: "Macintosh HD".into(),
+            path: path.into(),
+            volume,
+            space: None,
+        }
+    }
+
+    #[test]
+    fn a_place_gets_the_icon_of_what_it_is() {
+        assert_eq!(place_symbol(&place("/", true)), icons::HARD_DRIVE);
+        assert_eq!(place_symbol(&place("/Users/me", false)), icons::HOUSE);
+        assert_eq!(
+            place_symbol(&place("/Users/me/Desktop", false)),
+            icons::MONITOR
+        );
+        assert_eq!(
+            place_symbol(&place("/Users/me/Downloads", false)),
+            icons::DOWNLOAD
+        );
+        assert_eq!(
+            place_symbol(&place("/Users/me/Pictures", false)),
+            icons::IMAGE
+        );
     }
 }

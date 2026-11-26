@@ -205,14 +205,18 @@ impl Handler {
         drop: Option<&SidebarDrop>,
     ) -> Element<'_, Message> {
         let heading = |title| text(title).size(13).style(text::secondary);
-        let entry = |label: String,
+        let entry = |symbol: char,
+                     label: String,
                      tag: Option<&'static str>,
                      space: Option<&dto::DiskSpace>,
                      current: bool,
                      target: Target| {
-            let mut line = row![text(label).size(14).wrapping(text::Wrapping::None)]
-                .spacing(8)
-                .align_y(Alignment::Center);
+            let mut line = row![
+                crate::icons::icon(symbol, 15.0),
+                text(label).size(14).wrapping(text::Wrapping::None)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
             if let Some(tag) = tag {
                 line = line.push(text(tag).size(11).style(text::secondary));
             }
@@ -241,6 +245,7 @@ impl Handler {
             heading(t("places.title")),
             column(self.places.iter().map(|place| {
                 entry(
+                    mapper::place_symbol(place),
                     mapper::place_label(place),
                     place.volume.then_some(t("places.tag.disk")),
                     place.space.as_ref(),
@@ -278,8 +283,15 @@ impl Handler {
                     english_only("Mac")
                 });
                 row![
-                    entry(pin.label.clone(), tag, None, false, target),
-                    button(text("×").size(13))
+                    entry(
+                        crate::icons::FOLDER,
+                        pin.label.clone(),
+                        tag,
+                        None,
+                        false,
+                        target
+                    ),
+                    button(crate::icons::icon(crate::icons::CLOSE, 13.0))
                         .style(button::text)
                         .padding([4, 6])
                         .on_press(Message::Unpin(at)),
@@ -308,6 +320,7 @@ impl Handler {
                         };
                         let open_it = button(
                             row![
+                                crate::icons::icon(crate::icons::SYNC_FOLDER, 15.0),
                                 text(mirror.label()).size(14).wrapping(text::Wrapping::None),
                                 text(tag)
                                     .size(11)
@@ -324,7 +337,7 @@ impl Handler {
                         Some(
                             row![
                                 open_it,
-                                button(text("×").size(13))
+                                button(crate::icons::icon(crate::icons::CLOSE, 13.0))
                                     .style(button::text)
                                     .padding([4, 6])
                                     .on_press(Message::ForgetMirror(at)),
@@ -349,7 +362,7 @@ impl Handler {
                         .size(12)
                         .style(text::secondary)
                         .width(Length::Fill),
-                    button(text("×").size(12))
+                    button(crate::icons::icon(crate::icons::CLOSE, 12.0))
                         .style(button::text)
                         .on_press(Message::Dismiss),
                 ]
@@ -694,7 +707,11 @@ mod tests {
 
         let clicked: Vec<Message> = {
             let mut ui = iced_test::simulator(handler.view(Some(&open), None, None));
-            let at = ui.find("×").unwrap().bounds().center();
+            let at = ui
+                .find(crate::icons::CLOSE.to_string())
+                .unwrap()
+                .bounds()
+                .center();
             ui.point_at(at);
             let _ = ui.simulate(iced_test::simulator::click());
             ui.into_messages().collect()

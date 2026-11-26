@@ -34,6 +34,7 @@ use crate::handler::error::{self, ErrorResponse};
 use crate::handler::format::format_count;
 use crate::handler::guard;
 use crate::i18n::{t, tf};
+use crate::icons;
 
 /// How wide the filter's kind menu is: room for "Documents".
 const KIND_WIDTH: f32 = 104.0;
@@ -3907,7 +3908,7 @@ impl Handler {
             .align_y(Alignment::Center);
         if dismiss {
             content = content.push(
-                button(text("✕").size(12))
+                button(icons::icon(icons::CLOSE, 13.0))
                     .style(button::text)
                     .padding([2, 6])
                     .on_press(Message::Request(Request::DismissNotice)),
@@ -3924,26 +3925,26 @@ impl Handler {
 
     fn toolbar<'a>(&'a self, location: &'a Location, width: u16) -> Element<'a, Message> {
         let back = icon_button(
-            "‹",
+            icons::BACK,
             t("explorer.toolbar.back"),
             self.history
                 .can_go_back()
                 .then_some(Message::Request(Request::Back)),
         );
         let forward = icon_button(
-            "›",
+            icons::FORWARD,
             t("explorer.toolbar.forward"),
             self.history
                 .can_go_forward()
                 .then_some(Message::Request(Request::Forward)),
         );
         let up = icon_button(
-            "↑",
+            icons::UP,
             t("explorer.toolbar.up"),
             mapper::parent_path(&location.path).map(|_| Message::Request(Request::Up)),
         );
         let refresh = icon_button(
-            "↻",
+            icons::REFRESH,
             t("label.refresh"),
             Some(Message::Request(Request::Refresh)),
         );
@@ -3957,7 +3958,7 @@ impl Handler {
         let mut trail = row![].spacing(2).align_y(Alignment::Center);
         for (index, crumb) in crumbs.into_iter().enumerate() {
             if index > 0 {
-                trail = trail.push(text("›").style(text::secondary));
+                trail = trail.push(icons::icon(icons::CRUMB, 11.0).style(text::secondary));
             }
             let label = text(crumb.label).size(15).wrapping(Wrapping::None);
             trail = if index == last {
@@ -3982,8 +3983,8 @@ impl Handler {
 
         // Navigation and actions get a row each so neither is squeezed out
         // when the window is narrow and the pane is half of it.
-        let view_button = |label, view| {
-            button(text(label).size(14))
+        let view_button = |glyph, view| {
+            button(icons::icon(glyph, 15.0))
                 .padding([3, 8])
                 .style(if self.view == view {
                     button::secondary
@@ -3993,8 +3994,8 @@ impl Handler {
                 .on_press(Message::Request(Request::SetView(view)))
         };
         let views = row![
-            view_button("☰", dto::ViewMode::List),
-            view_button("▦", dto::ViewMode::Grid)
+            view_button(icons::LIST, dto::ViewMode::List),
+            view_button(icons::GRID, dto::ViewMode::Grid)
         ];
         // Always there, so nothing moves when it is used.
         let filter = text_input(t("explorer.filter.placeholder"), &self.filter)
@@ -4325,13 +4326,9 @@ fn loading_text(progress: Option<(usize, usize)>) -> String {
 
 /// A compact toolbar button that names itself on hover, so the folder
 /// trail keeps the room in a half-width pane.
-fn icon_button<'a>(
-    icon: &'a str,
-    label: &'a str,
-    on_press: Option<Message>,
-) -> Element<'a, Message> {
+fn icon_button<'a>(glyph: char, label: &'a str, on_press: Option<Message>) -> Element<'a, Message> {
     tooltip(
-        button(text(icon).size(15))
+        button(icons::icon(glyph, 16.0))
             .style(button::secondary)
             .padding([3, 10])
             .on_press_maybe(on_press),
@@ -5147,86 +5144,45 @@ fn badge_colour(kind: BadgeKind) -> Option<Color> {
     })
 }
 
-/// A small folder or page drawn from boxes, always in a square of `side`, so
-/// names line up whichever a row holds. A page is an outline, drawn in the
-/// row's text colour on the selection so it shows on the fill, with a band
-/// across its foot in its kind's colour (none for a file of no known kind).
+/// A small folder or file icon, always in a square of `side`, so names line up
+/// whichever a row holds. A folder is Finder's blue and a file takes its kind's
+/// colour (a file of no known kind is plain grey). On the selection's fill,
+/// which is itself blue, every one is drawn in the row's text colour so it shows.
 fn glyph<'a>(
     is_folder: bool,
     badge: Option<&Badge>,
     on_fill: bool,
     side: f32,
 ) -> Element<'a, Message> {
-    let band = badge.and_then(|badge| badge_colour(badge.kind));
-    let shape: Element<'a, Message> = if is_folder {
-        let part = |width: f32, height: f32| {
-            container(space())
-                .width(width)
-                .height(height)
-                .style(|_: &iced::Theme| container::Style {
-                    background: Some(FOLDER_BLUE.into()),
-                    border: iced::Border {
-                        radius: 1.5.into(),
-                        ..iced::Border::default()
-                    },
-                    ..container::Style::default()
-                })
-        };
-        column![
-            part((side * 0.4).round(), (side * 0.15).round()),
-            part(side, (side * 0.6).round())
-        ]
-        .into()
+    let kind = badge.map(|badge| badge.kind);
+    let (shape, tint) = if is_folder {
+        (icons::FOLDER, Some(FOLDER_BLUE))
     } else {
-        let width = (side * 0.72).round();
-        let height = (side * 0.9).round();
-        let page = match band {
-            Some(colour) => column![
-                space().height(Length::Fill),
-                container(space())
-                    .width(Length::Fill)
-                    .height((height * 0.38).round())
-                    .style(move |_: &iced::Theme| container::Style {
-                        background: Some(colour.into()),
-                        border: iced::Border {
-                            radius: iced::border::Radius::default().bottom(2.0),
-                            ..iced::Border::default()
-                        },
-                        ..container::Style::default()
-                    })
-            ]
-            .into(),
-            None => Element::from(space()),
-        };
-        container(page)
-            .width(width)
-            .height(height)
-            .style(move |theme: &iced::Theme| {
-                let palette = theme.extended_palette();
-                let line = if on_fill {
-                    Color {
-                        a: 0.85,
-                        ..palette.primary.base.text
-                    }
-                } else {
-                    palette.background.strong.color
-                };
-                container::Style {
-                    border: iced::Border {
-                        color: line,
-                        width: 1.0,
-                        radius: 2.0.into(),
-                    },
-                    ..container::Style::default()
-                }
-            })
-            .into()
+        match kind {
+            Some(BadgeKind::Photo) => (icons::FILE_IMAGE, badge_colour(BadgeKind::Photo)),
+            Some(BadgeKind::Video) => (icons::FILE_VIDEO, badge_colour(BadgeKind::Video)),
+            Some(BadgeKind::Music) => (icons::FILE_AUDIO, badge_colour(BadgeKind::Music)),
+            Some(BadgeKind::Document) => (icons::FILE_TEXT, badge_colour(BadgeKind::Document)),
+            Some(BadgeKind::Archive) => (icons::FILE_ARCHIVE, badge_colour(BadgeKind::Archive)),
+            Some(BadgeKind::App) => (icons::PACKAGE, badge_colour(BadgeKind::App)),
+            Some(BadgeKind::Other) | None => (icons::FILE, None),
+        }
     };
-    container(shape)
-        .width(side)
-        .height(side)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
+    icons::icon(shape, side)
+        .style(move |theme: &iced::Theme| {
+            let palette = theme.extended_palette();
+            text::Style {
+                color: Some(match tint {
+                    // The selection's fill is blue and a purple video would sink in it.
+                    _ if on_fill => palette.primary.base.text,
+                    Some(colour) => colour,
+                    None => Color {
+                        a: 0.55,
+                        ..palette.background.base.text
+                    },
+                }),
+            }
+        })
         .into()
 }
 
@@ -6718,12 +6674,12 @@ mod tests {
             ui.into_messages().collect()
         };
         assert!(
-            clicked(&handler, "‹").is_empty(),
+            clicked(&handler, &icons::BACK.to_string()).is_empty(),
             "nothing to go back to: the button does nothing"
         );
 
         request(&mut handler, Request::GoTo("/DCIM".into()));
-        let messages = clicked(&handler, "‹");
+        let messages = clicked(&handler, &icons::BACK.to_string());
         assert!(
             messages
                 .iter()
@@ -6734,7 +6690,7 @@ mod tests {
         }
         assert_eq!(path_of(&handler), Some("/"));
         assert!(
-            clicked(&handler, "›")
+            clicked(&handler, &icons::FORWARD.to_string())
                 .iter()
                 .any(|m| matches!(m, Message::Request(Request::Forward)))
         );
@@ -7953,7 +7909,7 @@ mod tests {
                 iced::Size::new(width, 420.0),
                 handler.view(),
             );
-            let views = ui.find("☰").unwrap().bounds();
+            let views = ui.find(icons::LIST.to_string()).unwrap().bounds();
             let new_folder = ui.find("New folder").unwrap().bounds();
             (views.center_y(), new_folder.y)
         };
@@ -7977,7 +7933,7 @@ mod tests {
             iced_test::Simulator::with_size(iced::Settings::default(), size, handler.view());
         // Just left of the kind menu; its rows about 23 points apart, the
         // first just under it, "Last 7 days" fourth.
-        let views = ui.find("☰").unwrap().bounds();
+        let views = ui.find(icons::LIST.to_string()).unwrap().bounds();
         let at = iced::Point::new(
             views.x - 8.0 - 8.0 - KIND_WIDTH - 8.0 - DATE_WIDTH / 2.0,
             views.center_y(),
@@ -8038,7 +7994,7 @@ mod tests {
 
     /// Where the kind menu is: just left of the view buttons.
     fn kind_menu_at(ui: &mut iced_test::Simulator<'_, Message>) -> iced::Point {
-        let list = ui.find("☰").unwrap().bounds();
+        let list = ui.find(icons::LIST.to_string()).unwrap().bounds();
         iced::Point::new(list.x - 8.0 - 8.0 - KIND_WIDTH / 2.0, list.center_y())
     }
 

@@ -15,6 +15,7 @@ use crate::handler::drop_spot::{SidebarDrop, Spot, drop_spot};
 use crate::handler::error::{self, ErrorResponse};
 use crate::handler::guard;
 use crate::i18n::{count, english_only, t, tf};
+use crate::icons;
 
 #[async_trait::async_trait]
 pub trait Service: Send + Sync {
@@ -756,15 +757,22 @@ impl Handler {
         // A read-only storage takes no drop.
         let drop = drop.filter(|_| storage.is_some_and(|storage| !storage.read_only));
         let rows = self.places.iter().map(|(label, path)| {
-            let go = button(text(label).size(14))
-                .width(Length::Fill)
-                .padding([4, 10])
-                .style(if shown == Some(path.as_str()) {
-                    button::secondary
-                } else {
-                    button::subtle
-                })
-                .on_press(Message::Request(Request::GoToPlace(path.clone())));
+            let go = button(
+                row![
+                    icons::icon(icons::folder_at(path), 15.0),
+                    text(label).size(14)
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding([4, 10])
+            .style(if shown == Some(path.as_str()) {
+                button::secondary
+            } else {
+                button::subtle
+            })
+            .on_press(Message::Request(Request::GoToPlace(path.clone())));
             match storage {
                 Some(storage) => {
                     let spot = Spot::Phone {
@@ -1077,32 +1085,45 @@ fn device_card(device: &DeviceResponse) -> Element<'_, Message> {
         text(&device.details).size(13).style(text::secondary),
     ]
     .push((!state.is_empty()).then(|| text(state).size(13)))
-    .push(
-        button(text(t("device.card.import")).size(13))
-            .style(button::text)
-            .padding(0)
-            .on_press(Message::Request(Request::Import)),
-    )
-    .push(
-        button(text(t("device.card.free_up")).size(13))
-            .style(button::text)
-            .padding(0)
-            .on_press(Message::Request(Request::FreeUpSpace)),
-    )
-    .push(
-        button(text(t("label.disconnect")).size(13))
-            .style(button::text)
-            .padding(0)
-            .on_press(Message::Request(Request::Disconnect)),
-    )
+    .push(card_action(
+        icons::IMPORT,
+        t("device.card.import"),
+        Request::Import,
+    ))
+    .push(card_action(
+        icons::CLEAN,
+        t("device.card.free_up"),
+        Request::FreeUpSpace,
+    ))
+    .push(card_action(
+        icons::UNPLUG,
+        t("label.disconnect"),
+        Request::Disconnect,
+    ))
     .spacing(4)
     .into()
 }
 
+/// One of the phone card's actions: its icon, then its words.
+fn card_action(symbol: char, label: &'static str, request: Request) -> Element<'static, Message> {
+    button(
+        row![icons::icon(symbol, 14.0), text(label).size(13)]
+            .spacing(6)
+            .align_y(Alignment::Center),
+    )
+    .style(button::text)
+    .padding(0)
+    .on_press(Message::Request(request))
+    .into()
+}
+
 fn storage_row(storage: &StorageResponse, is_selected: bool) -> Element<'_, Message> {
-    let mut name = row![text(&storage.name).size(15)]
-        .spacing(6)
-        .align_y(Alignment::Center);
+    let mut name = row![
+        icons::icon(icons::HARD_DRIVE, 16.0),
+        text(&storage.name).size(15)
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
     if storage.read_only {
         name = name.push(
             text(t("device.storage.read_only"))

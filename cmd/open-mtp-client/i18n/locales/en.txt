@@ -1037,3 +1037,4 @@ whatsnew.0_2_1.1 = When something goes wrong inside the app while it opens a fol
 whatsnew.0_2_1.2 = Updated the libraries the app is built on, including a fix for a reported memory-safety problem in one of them.
 whatsnew.0_2_2.1 = The command-line tool can now import new photos (import), check copies byte for byte (check) and run your saved mirrors (mirrors, mirror), the same way the app does, with no window.
 whatsnew.0_2_2.2 = Replaced the date and time library the app was built on, which is no longer maintained, and updated two others. Dates and times look the same as before.
+whatsnew.0_3_0.1 = New icons throughout: folders and files, the toolbar, the sidebar and the copy report now use proper icons instead of boxes and plain characters, and a file's icon takes the colour of its kind.
