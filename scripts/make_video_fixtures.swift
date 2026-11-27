@@ -9,12 +9,15 @@
 //   moov_at_end.mp4  160x96, the index (moov) after the data, as a phone's camera writes it
 //   faststart.mp4    160x96, the index before the data
 //   portrait.mp4     stored 160x96 with a 90 degree track matrix: seen as 96x160
+//   dark_start.mp4   160x96 like moov_at_end, but frames 0-19 are black (a fade-in): from
+//                    frame 20 on, and so at 1 s (a key frame), it is the red and blue picture
+//   black.mp4        160x96, black throughout
 import AVFoundation
 import AppKit
 
 let outDir = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 
-func make(_ name: String, faststart: Bool, rotate: Bool) throws {
+func make(_ name: String, faststart: Bool, rotate: Bool, blackFrames: Int = 0) throws {
     let url = outDir.appendingPathComponent(name)
     try? FileManager.default.removeItem(at: url)
     let w = 160, h = 96
@@ -41,6 +44,13 @@ func make(_ name: String, faststart: Bool, rotate: Bool) throws {
             data: CVPixelBufferGetBaseAddress(buffer!), width: w, height: h, bitsPerComponent: 8,
             bytesPerRow: CVPixelBufferGetBytesPerRow(buffer!), space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)!
+        if n < blackFrames {
+            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            CVPixelBufferUnlockBaseAddress(buffer!, [])
+            adaptor.append(buffer!, withPresentationTime: CMTime(value: CMTimeValue(n), timescale: 30))
+            continue
+        }
         ctx.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         // Core Graphics is y-up. A plain clip is stored as it is seen: red top-left
@@ -65,3 +75,5 @@ func make(_ name: String, faststart: Bool, rotate: Bool) throws {
 try make("moov_at_end.mp4", faststart: false, rotate: false)
 try make("faststart.mp4", faststart: true, rotate: false)
 try make("portrait.mp4", faststart: false, rotate: true)
+try make("dark_start.mp4", faststart: false, rotate: false, blackFrames: 20)
+try make("black.mp4", faststart: false, rotate: false, blackFrames: 60)

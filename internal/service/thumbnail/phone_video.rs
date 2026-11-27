@@ -95,6 +95,9 @@ where
 
     let mut have: Vec<Range<u64>> = Vec::new();
     let mut pieces: Arc<Vec<(u64, Vec<u8>)>> = Arc::new(Vec::new());
+    // A dark first picture (a fade-in) whose better one lies further on than this
+    // tier has read: kept in case no bigger tier gives it.
+    let mut dark_first: Option<Thumbnail> = None;
     for tier in 0..HEAD_TIERS.len() {
         let Some(plan) = read_plan(&layout, size, tier) else {
             break;
@@ -113,11 +116,14 @@ where
         // One file at a time on the disk: the last tier's is made again, bigger.
         let path = folder.path().join("video.mp4");
         let _ = std::fs::remove_file(&path);
-        if let Some(thumbnail) = frame_from(path, size, Arc::clone(&pieces)).await {
-            return Ok(Some(thumbnail));
+        if let Some(seen) = frame_from(path, size, Arc::clone(&pieces)).await {
+            if !seen.more_data_may_help {
+                return Ok(Some(seen.thumbnail));
+            }
+            dark_first = Some(seen.thumbnail);
         }
     }
-    Ok(None)
+    Ok(dark_first)
 }
 
 /// Reads the top-level box headers until `moov` and `mdat` are both found.
@@ -168,7 +174,7 @@ async fn frame_from(
     path: std::path::PathBuf,
     size: u64,
     pieces: Arc<Vec<(u64, Vec<u8>)>>,
-) -> Option<Thumbnail> {
+) -> Option<video::Seen> {
     tokio::task::spawn_blocking(move || {
         let parts: Vec<Piece<'_>> = pieces
             .iter()
@@ -178,7 +184,7 @@ async fn frame_from(
             })
             .collect();
         write_sparse(&path, size, &parts).ok()?;
-        video::first_frame(&path, video::FRAME_TIMEOUT)
+        video::first_look(&path, video::FRAME_TIMEOUT)
     })
     .await
     .ok()
@@ -208,7 +214,9 @@ impl Drop for Counted {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-    use crate::service::thumbnail::fixtures::{bytes, padded_at_end, padded_at_start};
+    use crate::service::thumbnail::fixtures::{
+        bytes, padded_at_end, padded_at_start, padded_before_chunk,
+    };
     use std::sync::Mutex;
     use std::sync::atomic::Ordering;
 
@@ -398,6 +406,74 @@ mod tests {
         phone.slow = None;
         assert!(phone.frame().await.unwrap().is_some());
         assert_eq!(left_behind(&phone), 0);
+    }
+
+    fn mean_brightness(thumb: &Thumbnail) -> u32 {
+        let sum: u64 = thumb
+            .rgba
+            .chunks_exact(4)
+            .map(|p| (u64::from(p[0]) * 299 + u64::from(p[1]) * 587 + u64::from(p[2]) * 114) / 1000)
+            .sum();
+        (sum / (thumb.rgba.len() as u64 / 4)) as u32
+    }
+
+    #[tokio::test]
+    async fn a_video_that_starts_black_is_read_further_for_a_later_frame() {
+        // Frames 0-29 (black at the start) are at the start; the key frame at 1 s
+        // lies 3 MiB on, past the first tier's 2 MiB.
+        let phone = Phone::new(padded_before_chunk("dark_start.mp4", 1, 3 << 20));
+        let thumb = phone
+            .frame()
+            .await
+            .unwrap()
+            .expect("a frame from the second tier");
+        assert!(
+            is_red(top_left(&thumb)),
+            "the picture a moment in, not black"
+        );
+        let asked = phone.asked.lock().unwrap().clone();
+        assert!(
+            asked.iter().any(|&(at, len)| len > 16 && at >= 2 << 20),
+            "the second tier's bytes were read: {asked:?}"
+        );
+        let moov_at = phone.bytes.windows(4).position(|w| w == b"moov").unwrap() as u64 - 4;
+        let index_reads = asked
+            .iter()
+            .filter(|&&(at, len)| at == moov_at && len > 16)
+            .count();
+        assert_eq!(index_reads, 1, "the index is read once: {asked:?}");
+        assert!(asked.len() <= 12, "{} requests: {asked:?}", asked.len());
+        assert_eq!(left_behind(&phone), 0);
+    }
+
+    #[tokio::test]
+    async fn a_video_black_past_every_tier_still_gets_its_black_frame() {
+        // The picture a moment in lies 40 MiB on, past the last tier's 32.
+        let phone = Phone::new(padded_before_chunk("dark_start.mp4", 1, 40 << 20));
+        let thumb = phone
+            .frame()
+            .await
+            .unwrap()
+            .expect("the black first frame, not nothing");
+        assert!(mean_brightness(&thumb) < 20, "{}", mean_brightness(&thumb));
+        let asked = phone.requests();
+        // 3 headers, the start at its biggest (32 MiB) and the index.
+        assert!(asked <= 3 + 32 + 2, "{asked} requests");
+        assert_eq!(left_behind(&phone), 0);
+    }
+
+    #[tokio::test]
+    async fn a_video_that_is_black_all_through_does_not_climb_the_tiers() {
+        let black = Phone::new(bytes("black.mp4"));
+        let plain = Phone::new(bytes("moov_at_end.mp4"));
+        let thumb = black.frame().await.unwrap().expect("a black frame");
+        plain.frame().await.unwrap().expect("a frame");
+        assert!(mean_brightness(&thumb) < 20);
+        assert_eq!(
+            black.requests(),
+            plain.requests(),
+            "the later frame was there and black too: nothing more to read"
+        );
     }
 
     #[tokio::test]
