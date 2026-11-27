@@ -411,7 +411,9 @@ mod tests {
     fn mean_brightness(thumb: &Thumbnail) -> u32 {
         let sum: u64 = thumb
             .rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| (u64::from(p[0]) * 299 + u64::from(p[1]) * 587 + u64::from(p[2]) * 114) / 1000)
             .sum();
         (sum / (thumb.rgba.len() as u64 / 4)) as u32

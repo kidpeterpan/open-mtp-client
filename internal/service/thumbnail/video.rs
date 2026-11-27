@@ -95,7 +95,9 @@ fn settle(first: Thumbnail, later: Later) -> Seen {
 fn brightness(picture: &Thumbnail) -> u64 {
     picture
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| 299 * u64::from(p[0]) + 587 * u64::from(p[1]) + 114 * u64::from(p[2]))
         .sum()
 }
