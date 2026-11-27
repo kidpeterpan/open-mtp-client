@@ -52,14 +52,18 @@ pub fn padded_at_end(extra: usize) -> Vec<u8> {
 /// `mdat`: the first picture now lies `extra` bytes into the data, and the
 /// index is made to say so.
 pub fn padded_at_start(extra: usize) -> Vec<u8> {
-    let whole = bytes("moov_at_end.mp4");
-    let (mdat_start, mdat_data, moov_at) = layout_of(&whole);
+    padded_before_chunk("moov_at_end.mp4", 0, extra)
+}
+
+/// `name` (a clip laid out like `moov_at_end.mp4`: `ftyp`, `mdat`, `moov`) with
+/// `extra` bytes of 0xAB filler put in front of its chunk number `chunk`: that
+/// chunk and every later one lie `extra` bytes further on, and the index is
+/// made to say so. `padded_before_chunk(name, 0, extra)` is `padded_at_start`.
+pub fn padded_before_chunk(name: &str, chunk: usize, extra: usize) -> Vec<u8> {
+    let whole = bytes(name);
+    let (mdat_start, _, moov_at) = layout_of(&whole);
     let size_at = mdat_start + 8;
     let old = u64::from_be_bytes(whole[size_at..size_at + 8].try_into().unwrap());
-    let mut out = whole[..mdat_data].to_vec();
-    out[size_at..size_at + 8].copy_from_slice(&(old + extra as u64).to_be_bytes());
-    out.extend(std::iter::repeat_n(0xAB, extra));
-    out.extend_from_slice(&whole[mdat_data..moov_at]);
     let mut moov = whole[moov_at..].to_vec();
     // `stco`: size, kind, version and flags, a count, then 32-bit chunk offsets.
     let stco = moov
@@ -67,11 +71,19 @@ pub fn padded_at_start(extra: usize) -> Vec<u8> {
         .position(|w| w == b"stco")
         .expect("an stco box");
     let count = u32::from_be_bytes(moov[stco + 8..stco + 12].try_into().unwrap()) as usize;
-    for entry in 0..count {
-        let at = stco + 12 + entry * 4;
-        let offset = u32::from_be_bytes(moov[at..at + 4].try_into().unwrap());
-        moov[at..at + 4].copy_from_slice(&(offset + extra as u32).to_be_bytes());
+    assert!(chunk < count, "{name} has {count} chunks");
+    let entry = |at: usize| stco + 12 + at * 4;
+    let from = u32::from_be_bytes(moov[entry(chunk)..entry(chunk) + 4].try_into().unwrap());
+    for at in 0..count {
+        let offset = u32::from_be_bytes(moov[entry(at)..entry(at) + 4].try_into().unwrap());
+        if offset >= from {
+            moov[entry(at)..entry(at) + 4].copy_from_slice(&(offset + extra as u32).to_be_bytes());
+        }
     }
+    let mut out = whole[..from as usize].to_vec();
+    out[size_at..size_at + 8].copy_from_slice(&(old + extra as u64).to_be_bytes());
+    out.extend(std::iter::repeat_n(0xAB, extra));
+    out.extend_from_slice(&whole[from as usize..moov_at]);
     out.extend_from_slice(&moov);
     out
 }
@@ -112,8 +124,37 @@ mod tests {
         assert_eq!(kinds("moov_at_end.mp4"), ["ftyp", "mdat", "moov"]);
         assert_eq!(kinds("portrait.mp4"), ["ftyp", "mdat", "moov"]);
         assert_eq!(kinds("faststart.mp4"), ["ftyp", "moov", "mdat"]);
-        for name in ["moov_at_end.mp4", "faststart.mp4", "portrait.mp4"] {
+        assert_eq!(kinds("dark_start.mp4"), ["ftyp", "mdat", "moov"]);
+        assert_eq!(kinds("black.mp4"), ["ftyp", "mdat", "moov"]);
+        for name in [
+            "moov_at_end.mp4",
+            "faststart.mp4",
+            "portrait.mp4",
+            "dark_start.mp4",
+            "black.mp4",
+        ] {
             assert!(bytes(name).len() <= 60 * 1024, "{name} stays small");
         }
+    }
+
+    #[test]
+    fn padding_before_a_chunk_moves_that_chunk_and_the_ones_after_it() {
+        let whole = bytes("dark_start.mp4");
+        let padded = padded_before_chunk("dark_start.mp4", 1, 5000);
+        assert_eq!(padded.len(), whole.len() + 5000);
+        // `dark_start.mp4` has two chunks of 30 frames: 0-29 at 44, 30-59 at 1023.
+        // (the `mdat`'s own size, at 36..44, is longer by the filler)
+        assert_eq!(&padded[..36], &whole[..36]);
+        assert_eq!(&padded[44..1023], &whole[44..1023], "the first chunk stays");
+        assert!(padded[1023..6023].iter().all(|&b| b == 0xAB));
+        assert_eq!(
+            &padded[6023..6039],
+            &whole[1023..1039],
+            "the second chunk follows"
+        );
+        assert_eq!(
+            padded_before_chunk("moov_at_end.mp4", 0, 777),
+            padded_at_start(777)
+        );
     }
 }

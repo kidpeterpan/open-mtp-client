@@ -4934,10 +4934,26 @@ fn tile<'a>(
     size: grid::Tile,
 ) -> Element<'a, Message> {
     let preview: Element<'a, Message> = match thumb {
-        Some(Thumb::Ready(picture)) => image(picture.clone())
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into(),
+        Some(Thumb::Ready(picture)) => {
+            let picture = image(picture.clone())
+                .width(Length::Fill)
+                .height(Length::Fill);
+            // A frame of a video looks like a photo: a mark says which it is.
+            if entry.badge.as_ref().map(|badge| badge.kind) == Some(BadgeKind::Video) {
+                stack![
+                    picture,
+                    container(video_mark())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(6)
+                        .align_x(Alignment::Start)
+                        .align_y(Alignment::End)
+                ]
+                .into()
+            } else {
+                picture.into()
+            }
+        }
         _ => match &entry.badge {
             Some(badge) => center(badge_tile(badge)).into(),
             None => center(glyph(true, None, false, 44.0)).into(),
@@ -4967,6 +4983,26 @@ fn tile<'a>(
         .style(cell_style(look));
 
     pressable(mouse_area(cell), entry, look).into()
+}
+
+/// The video's colour and glyph on a small chip, on the corner of a frame of it.
+fn video_mark<'a>() -> Element<'a, Message> {
+    let colour = badge_colour(BadgeKind::Video).unwrap_or(Color::BLACK);
+    container(
+        icons::icon(icons::FILE_VIDEO, 13.0).style(|_theme: &iced::Theme| text::Style {
+            color: Some(Color::WHITE),
+        }),
+    )
+    .padding([2, 5])
+    .style(move |_theme: &iced::Theme| container::Style {
+        background: Some(colour.into()),
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..iced::Border::default()
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// What a tile or row is filled with: the colour of a drop target beats the
@@ -11287,6 +11323,66 @@ mod tests {
             handler.thumbnails.get("IMG_02999.jpg"),
             Some(Thumb::Loading)
         ));
+    }
+
+    /// A grid of `names` in /DCIM with a picture only for `with`.
+    fn grid_with_a_picture_for(names: &[&str], with: &str) -> Handler {
+        let mut handler = loading_handler();
+        let _ = handler.set_view(dto::ViewMode::Grid);
+        let entries: Vec<_> = names.iter().map(|name| file(name)).collect();
+        let _ = handler.update(listed("/DCIM", &entries));
+        handler.thumbnails.clear();
+        let _ = handler.update(thumbnail(with));
+        handler
+    }
+
+    fn shows_the_video_mark(handler: &Handler) -> bool {
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            iced::Size::new(500.0, 800.0),
+            handler.view(),
+        );
+        ui.find(icons::FILE_VIDEO.to_string()).is_ok()
+    }
+
+    #[test]
+    fn a_video_tile_with_a_picture_wears_a_video_mark_so_it_is_not_taken_for_a_photo() {
+        let handler = grid_with_a_picture_for(&["clip.mp4"], "clip.mp4");
+
+        let mut ui = iced_test::Simulator::with_size(
+            iced::Settings::default(),
+            iced::Size::new(500.0, 800.0),
+            handler.view(),
+        );
+        let mark = ui
+            .find(icons::FILE_VIDEO.to_string())
+            .expect("a video mark on the picture")
+            .bounds();
+        let name = ui.find("clip.mp4").unwrap().bounds();
+
+        // On the picture's bottom-left corner: just above the name, left of it.
+        assert!(
+            mark.y < name.y && mark.y > name.y - 40.0,
+            "{mark:?} {name:?}"
+        );
+        assert!(mark.x < name.x, "{mark:?} {name:?}");
+    }
+
+    #[test]
+    fn a_photo_tile_with_a_picture_wears_no_video_mark() {
+        assert!(!shows_the_video_mark(&grid_with_a_picture_for(
+            &["IMG_0001.jpg"],
+            "IMG_0001.jpg"
+        )));
+    }
+
+    #[test]
+    fn a_video_tile_still_waiting_for_its_picture_keeps_its_label_and_no_mark() {
+        let handler = grid_with_a_picture_for(&["clip.mp4", "other.mp4"], "other.mp4");
+        // `other.mp4` has a picture and the mark; take it off to see `clip.mp4` alone.
+        let mut alone = handler;
+        alone.thumbnails.clear();
+        assert!(!shows_the_video_mark(&alone));
     }
 
     #[test]

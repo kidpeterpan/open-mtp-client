@@ -16,11 +16,90 @@ use std::time::Duration;
 /// How long the decoder gets for one frame.
 pub const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// What the decoder made of a video, and whether more of the file might make it better.
+#[derive(Debug, PartialEq)]
+pub struct Seen {
+    pub thumbnail: Thumbnail,
+    /// The first picture is dark (a fade-in) and a later one, which would be better,
+    /// could not be made: its data may be in a part of the file not read yet. A
+    /// whole file never says so; a stand-in for a video on a phone may.
+    pub more_data_may_help: bool,
+}
+
 /// The first frame of the video at `path`, at most `THUMBNAIL_SIZE` a side and
 /// the right way up. `None` when no frame can be made or `timeout` passes.
 pub fn first_frame(path: &Path, timeout: Duration) -> Option<Thumbnail> {
+    first_look(path, timeout).map(|seen| seen.thumbnail)
+}
+
+/// `first_frame`, and whether reading more of the file could give a better one.
+/// A picture that starts dark (a clip that fades in from black) is replaced by
+/// one a moment in, when that can be made and is brighter.
+pub fn first_look(path: &Path, timeout: Duration) -> Option<Seen> {
     let path = path.to_path_buf();
     with_deadline(timeout, move || decode(&path)).flatten()
+}
+
+/// A picture with a mean brightness below this (of 255) is "dark": black, or a
+/// fade from it.
+const DARK_BELOW: u64 = 20;
+
+/// Whether `picture` is dark: its mean brightness, with the weights the eye gives
+/// red, green and blue, is under `DARK_BELOW`. A picture with no pixels is dark.
+fn is_dark(picture: &Thumbnail) -> bool {
+    let pixels = (picture.rgba.len() / 4) as u64;
+    if pixels == 0 {
+        return true;
+    }
+    brightness(picture) < DARK_BELOW * 1000 * pixels
+}
+
+/// Where in a clip of `length` seconds to look when its start is dark: one second
+/// in, or halfway for a clip under two. None for one too short or of no known length.
+fn later_time(length: f64) -> Option<f64> {
+    (length.is_finite() && length >= 0.4).then(|| (length / 2.0).min(1.0))
+}
+
+/// What came of looking at the later moment.
+enum Later {
+    /// The clip is too short to have one.
+    NoMoment,
+    /// There is one, and no picture could be made of it.
+    Missing,
+    Frame(Thumbnail),
+}
+
+/// The first picture, or the later one when it is brighter.
+fn settle(first: Thumbnail, later: Later) -> Seen {
+    match later {
+        Later::NoMoment => Seen {
+            thumbnail: first,
+            more_data_may_help: false,
+        },
+        Later::Missing => Seen {
+            thumbnail: first,
+            more_data_may_help: true,
+        },
+        Later::Frame(later) => Seen {
+            thumbnail: if brightness(&later) > brightness(&first) {
+                later
+            } else {
+                first
+            },
+            more_data_may_help: false,
+        },
+    }
+}
+
+/// The sum of the brightness of every pixel (only compared between pictures).
+fn brightness(picture: &Thumbnail) -> u64 {
+    picture
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| 299 * u64::from(p[0]) + 587 * u64::from(p[1]) + 114 * u64::from(p[2]))
+        .sum()
 }
 
 /// Threads left running past their deadline, and the most there may be: a
@@ -80,13 +159,13 @@ fn with_deadline_counting<T: Send + 'static>(
 use av::decode;
 
 #[cfg(not(target_os = "macos"))]
-fn decode(_path: &Path) -> Option<Thumbnail> {
+fn decode(_path: &Path) -> Option<Seen> {
     None
 }
 
 #[cfg(target_os = "macos")]
 mod av {
-    use super::Thumbnail;
+    use super::{Later, Seen, Thumbnail, is_dark, later_time, settle};
     use crate::dto::THUMBNAIL_SIZE;
     use av_core_foundation::{CGPoint, CGRect, CGSize};
     use av_core_graphics::{
@@ -102,15 +181,15 @@ mod av {
     /// (set to 255 below). A frame of a video is opaque, so it is not premultiplied.
     const RGB_SKIP_LAST: u32 = 5;
 
-    pub(super) fn decode(path: &Path) -> Option<Thumbnail> {
+    pub(super) fn decode(path: &Path) -> Option<Seen> {
         autoreleasepool(|_| decode_in_pool(path))
     }
 
-    #[allow(deprecated)] // the synchronous call, so the deadline above is the only wait
-    fn decode_in_pool(path: &Path) -> Option<Thumbnail> {
+    #[allow(deprecated)] // the synchronous calls, so the deadline above is the only wait
+    fn decode_in_pool(path: &Path) -> Option<Seen> {
         let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(path.to_str()?), false);
         // SAFETY: plain Objective-C calls with valid arguments; no pointers are kept.
-        let image = unsafe {
+        let (asset, generator) = unsafe {
             let asset = AVURLAsset::URLAssetWithURL_options(&url, None);
             let generator = AVAssetImageGenerator::assetImageGeneratorWithAsset(&asset);
             generator.setAppliesPreferredTrackTransform(true);
@@ -119,13 +198,46 @@ mod av {
                 width: side,
                 height: side,
             });
-            // The default tolerances (any frame near the time asked), not zero: a
-            // phone's clip often starts a little after 0 or after an edit.
-            generator
-                .copyCGImageAtTime_actualTime_error(CMTime::new(0, 1), std::ptr::null_mut())
-                .ok()?
+            (asset, generator)
         };
-        rgba_of(&image)
+        // The default tolerances (any frame near the time asked), not zero: a
+        // phone's clip often starts a little after 0 or after an edit.
+        let frame_at = |seconds: f64| -> Option<Thumbnail> {
+            // SAFETY: as above; the image is only read while it is alive.
+            let image = unsafe {
+                let time = CMTime::new((seconds * 600.0).round() as i64, 600);
+                generator
+                    .copyCGImageAtTime_actualTime_error(time, std::ptr::null_mut())
+                    .ok()?
+            };
+            rgba_of(&image)
+        };
+
+        let first = frame_at(0.0)?;
+        if !is_dark(&first) {
+            return Some(Seen {
+                thumbnail: first,
+                more_data_may_help: false,
+            });
+        }
+        // A fade-in from black: look a moment into the clip instead.
+        // SAFETY: a plain property read.
+        let length = seconds_of(unsafe { asset.duration() });
+        let later = match later_time(length) {
+            None => Later::NoMoment,
+            Some(at) => frame_at(at).map_or(Later::Missing, Later::Frame),
+        };
+        Some(settle(first, later))
+    }
+
+    /// `time` in seconds; NaN for one that is invalid, indefinite or infinite.
+    fn seconds_of(time: CMTime) -> f64 {
+        // kCMTimeFlags_Valid is 1; positive and negative infinity and indefinite are
+        // 4, 8 and 16.
+        if time.flags.0 & 0b1_1101 != 1 || time.timescale <= 0 {
+            return f64::NAN;
+        }
+        time.value as f64 / f64::from(time.timescale)
     }
 
     /// The pixels of `image` as opaque sRGB RGBA, top row first, shrunk to fit
@@ -181,6 +293,116 @@ mod av {
             height: u32::try_from(height).ok()?,
             rgba,
         })
+    }
+}
+
+#[cfg(test)]
+mod choosing_tests {
+    use super::*;
+
+    fn grey(value: u8, pixels: usize) -> Thumbnail {
+        Thumbnail {
+            width: pixels as u32,
+            height: 1,
+            rgba: [value, value, value, 255].repeat(pixels),
+        }
+    }
+
+    #[test]
+    fn black_is_dark_and_the_middle_of_the_range_is_not() {
+        assert!(is_dark(&grey(0, 100)));
+        assert!(!is_dark(&grey(128, 100)));
+        assert!(!is_dark(&grey(255, 100)));
+    }
+
+    #[test]
+    fn dark_ends_at_a_mean_brightness_of_20() {
+        assert!(is_dark(&grey(19, 100)));
+        assert!(!is_dark(&grey(20, 100)));
+    }
+
+    #[test]
+    fn half_black_and_half_white_is_not_dark() {
+        let mut half = grey(0, 50);
+        half.rgba.extend(grey(255, 50).rgba);
+        half.width = 100;
+        assert!(!is_dark(&half));
+    }
+
+    #[test]
+    fn colour_counts_by_how_bright_the_eye_finds_it() {
+        // Pure blue is dark to the eye (0.114), pure green is not (0.587).
+        let blue = Thumbnail {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 255, 255],
+        };
+        let green = Thumbnail {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 255, 0, 255],
+        };
+        assert!(!is_dark(&blue), "blue is 29 of 255");
+        assert!(!is_dark(&green));
+        let navy = Thumbnail {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 150, 255],
+        };
+        assert!(is_dark(&navy), "17 of 255");
+    }
+
+    #[test]
+    fn an_empty_picture_is_dark_not_a_division_by_zero() {
+        let none = Thumbnail {
+            width: 0,
+            height: 0,
+            rgba: Vec::new(),
+        };
+        assert!(is_dark(&none));
+    }
+
+    #[test]
+    fn the_later_moment_is_one_second_in_or_halfway_for_a_short_clip() {
+        assert_eq!(later_time(2.0), Some(1.0));
+        assert_eq!(later_time(600.0), Some(1.0));
+        assert_eq!(later_time(0.5), Some(0.25));
+        assert_eq!(later_time(0.4), Some(0.2));
+    }
+
+    #[test]
+    fn a_clip_too_short_or_of_no_known_length_has_no_later_moment() {
+        for length in [0.0, 0.1, 0.39, -3.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(later_time(length), None, "{length}");
+        }
+    }
+
+    #[test]
+    fn a_brighter_later_frame_wins_and_settles_it() {
+        let seen = settle(grey(0, 4), Later::Frame(grey(90, 4)));
+        assert_eq!(seen.thumbnail, grey(90, 4));
+        assert!(!seen.more_data_may_help);
+    }
+
+    #[test]
+    fn a_later_frame_darker_than_the_first_loses() {
+        let seen = settle(grey(10, 4), Later::Frame(grey(2, 4)));
+        assert_eq!(seen.thumbnail, grey(10, 4));
+        assert!(!seen.more_data_may_help);
+    }
+
+    #[test]
+    fn a_later_frame_that_could_not_be_made_keeps_the_first_and_asks_for_more() {
+        let seen = settle(grey(0, 4), Later::Missing);
+        assert_eq!(seen.thumbnail, grey(0, 4));
+        assert!(seen.more_data_may_help);
+    }
+
+    #[test]
+    fn no_later_moment_to_try_settles_on_the_first() {
+        let seen = settle(grey(0, 4), Later::NoMoment);
+        assert_eq!(seen.thumbnail, grey(0, 4));
+        assert!(!seen.more_data_may_help);
     }
 }
 
@@ -246,6 +468,53 @@ mod tests {
             thumb.width,
             thumb.height
         );
+    }
+
+    #[test]
+    fn a_video_that_starts_black_shows_a_later_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = first_look(&fixture(dir.path(), "dark_start.mp4"), LONG).unwrap();
+        assert_upright(&seen.thumbnail);
+        assert!(!seen.more_data_may_help);
+        // The plain call gives the same picture.
+        let plain = first_frame(&fixture(dir.path(), "dark_start.mp4"), LONG).unwrap();
+        assert_eq!(plain, seen.thumbnail);
+    }
+
+    #[test]
+    fn a_video_that_is_black_throughout_gives_a_black_frame_and_nothing_more_to_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = first_look(&fixture(dir.path(), "black.mp4"), LONG).unwrap();
+        assert!(is_dark(&seen.thumbnail));
+        assert!(
+            !seen.more_data_may_help,
+            "the later frame was made, and is black too"
+        );
+    }
+
+    #[test]
+    fn a_video_with_a_picture_at_the_start_is_not_looked_at_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = first_look(&fixture(dir.path(), "moov_at_end.mp4"), LONG).unwrap();
+        assert!(!is_dark(&seen.thumbnail));
+        assert!(!seen.more_data_may_help);
+    }
+
+    #[test]
+    fn a_later_frame_whose_data_is_not_there_yet_keeps_the_black_one_and_asks_for_more() {
+        // `dark_start.mp4`'s second chunk (frames 30-59, the key frame at 1 s) is a
+        // hole, as when only the start of a phone's video has been read.
+        let mut whole = bytes("dark_start.mp4");
+        let mdat_end = 28 + 2464;
+        whole[1023..mdat_end].fill(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cut.mp4");
+        std::fs::write(&path, &whole).unwrap();
+
+        let seen = first_look(&path, LONG).unwrap();
+
+        assert!(is_dark(&seen.thumbnail));
+        assert!(seen.more_data_may_help);
     }
 
     #[test]

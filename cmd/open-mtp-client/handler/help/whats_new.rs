@@ -18,6 +18,10 @@ pub struct Release {
 /// Every release, newest first.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.4.1",
+        notes: &[key("whatsnew.0_4_1.1")],
+    },
+    Release {
         version: "0.4.0",
         notes: &[key("whatsnew.0_4_0.1")],
     },

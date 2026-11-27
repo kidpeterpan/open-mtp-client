@@ -1068,6 +1068,18 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
+    async fn a_mac_video_that_starts_black_shows_a_later_frame() {
+        let (dir, path) = mac_video("dark_start.mp4");
+        let thumbnail = mac_service(dir.path())
+            .mac(&path)
+            .await
+            .unwrap()
+            .expect("a frame");
+        assert!(red_top_left(&thumbnail), "a fade-in is not the picture");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
     async fn a_mac_portrait_video_is_upright() {
         let (dir, path) = mac_video("portrait.mp4");
         let thumbnail = mac_service(dir.path())
